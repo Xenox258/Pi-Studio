@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=OMP Studio
+Comment=Desktop interface for Oh My Pi
+Exec=omp-studio
+Icon=omp-studio
+Terminal=false
+Type=Application
+Categories=Development;IDE;
+StartupNotify=true
+StartupWMClass=OMP Studio

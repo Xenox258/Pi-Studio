@@ -1,0 +1,24 @@
+* { box-sizing: border-box; }
+html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+body { background: var(--background); color: var(--text-primary); font-size: 14px; line-height: 1.45; }
+button, input, select, textarea { color: inherit; font: inherit; }
+button { cursor: pointer; }
+a { color: inherit; text-decoration: none; }
+h1, h2, h3, p { margin: 0; }
+h1 { font-size: clamp(24px, 2vw, 32px); line-height: 1.15; letter-spacing: -0.025em; }
+h2 { font-size: 18px; line-height: 1.25; }
+h3 { font-size: 14px; line-height: 1.3; }
+small { color: var(--text-secondary); }
+::selection { background: rgba(114, 87, 244, .38); }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border: 2px solid transparent; border-radius: 8px; background-clip: padding-box; }
+:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.app { min-width: 0; height: 100%; background: radial-gradient(circle at 78% -15%, rgba(63, 86, 120, .09), transparent 35%), var(--background); }
+.muted { color: var(--text-muted); }
+.secondary { color: var(--text-secondary); }
+.success { color: var(--success); }
+.warning { color: var(--warning); }
+.danger { color: var(--danger); }
+.accent { color: #a997ff; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; clip: rect(0,0,0,0); overflow: hidden; white-space: nowrap; border: 0; }

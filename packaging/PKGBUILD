@@ -1,0 +1,33 @@
+pkgname=omp-studio
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Lightweight desktop interface for Oh My Pi'
+arch=('x86_64')
+url='https://github.com/can1357/oh-my-pi'
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3' 'sqlite')
+makedepends=('cargo' 'nodejs' 'npm' 'pkgconf' 'rust')
+source=()
+sha256sums=()
+
+prepare() {
+  rm -rf "$srcdir/omp-studio"
+  mkdir -p "$srcdir/omp-studio"
+  cp -a "$startdir/../package.json" "$startdir/../package-lock.json" "$startdir/../index.html" "$startdir/../vite.config.ts" "$startdir/../tsconfig.json" "$startdir/../tsconfig.app.json" "$startdir/../tsconfig.node.json" "$srcdir/omp-studio/"
+  cp -a "$startdir/../src" "$startdir/../src-tauri" "$startdir/../public" "$srcdir/omp-studio/"
+  rm -rf "$srcdir/omp-studio/src-tauri/target"
+}
+
+build() {
+  cd "$srcdir/omp-studio"
+  npm ci
+  npm run build
+  cargo build --manifest-path src-tauri/Cargo.toml --release --locked
+}
+
+package() {
+  cd "$srcdir/omp-studio"
+  install -Dm755 src-tauri/target/release/omp-studio "$pkgdir/usr/bin/omp-studio"
+  install -Dm644 src-tauri/icons/128x128.png "$pkgdir/usr/share/pixmaps/omp-studio.png"
+  install -Dm644 "$startdir/omp-studio.desktop" "$pkgdir/usr/share/applications/omp-studio.desktop"
+}

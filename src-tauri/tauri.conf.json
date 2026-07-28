@@ -1,0 +1,42 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "OMP Studio",
+  "version": "0.1.0",
+  "identifier": "dev.teobrunet.ompstudio",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev -- --port 1420",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [{
+      "label": "main",
+      "title": "OMP Studio",
+      "width": 1568,
+      "height": 981,
+      "minWidth": 560,
+      "minHeight": 700,
+      "resizable": true,
+      "fullscreen": false,
+      "decorations": true,
+      "backgroundColor": "#1b1b1b"
+    }],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "DeveloperTool",
+    "shortDescription": "A lightweight desktop interface for OMP",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}
