@@ -1,0 +1,31 @@
+{
+  "generatedAt": 1784572495624,
+  "reports": [{
+    "provider": "openai-codex",
+    "fetchedAt": 1784572346241,
+    "limits": [{
+      "id": "openai-codex:primary",
+      "label": "7 days",
+      "window": { "id": "7d", "resetsAt": 1784996123000 },
+      "amount": { "used": 96, "limit": 100, "unit": "percent" },
+      "status": "warning"
+    }],
+    "resetCredits": {
+      "availableCount": 3,
+      "credits": [{ "grantedAt": "2026-07-01T20:39:12Z", "expiresAt": "2026-07-31T20:39:12Z", "status": "available" }]
+    },
+    "metadata": { "planType": "plus", "email": "developer@example.com", "accountId": "credential-1" }
+  }, {
+    "provider": "anthropic",
+    "fetchedAt": 1784572400000,
+    "limits": [{
+      "id": "anthropic:5h",
+      "label": "Claude 5 Hour",
+      "window": { "id": "5h", "resetsAt": 1784590000000 },
+      "amount": { "used": 2000, "limit": 100000, "usedFraction": 0.02, "unit": "tokens" },
+      "status": "ok"
+    }],
+    "metadata": { "email": "developer@example.com", "accountId": "anthropic-credential", "orgId": "org-1", "orgName": "Example Organization" }
+  }],
+  "accountsWithoutUsage": [{ "provider": "github-copilot", "type": "oauth", "email": "developer@example.com", "accountId": "copilot-credential" }]
+}

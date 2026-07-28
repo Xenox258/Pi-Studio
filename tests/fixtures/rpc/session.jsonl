@@ -1,0 +1,5 @@
+{"type":"ready"}
+{"type":"agent_start"}
+{"type":"message_update","assistantMessageEvent":{},"message":{"id":"m1","text":"Hello"}}
+{"type":"tool_execution_start","tool":"read","path":"src/App.tsx"}
+{"type":"response","id":"r1","command":"prompt","success":true,"data":{}}
