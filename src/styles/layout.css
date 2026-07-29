@@ -529,6 +529,61 @@
 .project-switcher svg:last-child {
 	color: var(--text-muted);
 }
+.topbar-usage-trigger {
+	min-height: 32px;
+	padding: 0 9px;
+	display: inline-grid;
+	grid-template-columns: auto auto 36px auto;
+	align-items: center;
+	gap: 7px;
+	border: 1px solid var(--border-default);
+	border-radius: var(--radius-sm);
+	background: var(--surface-card);
+	color: var(--text-secondary);
+	font-size: 11px;
+	cursor: pointer;
+	transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+.popover__trigger:hover .topbar-usage-trigger {
+	border-color: var(--border-strong);
+	background: var(--overlay-hover);
+	color: var(--text-primary);
+}
+.popover__trigger:focus-visible .topbar-usage-trigger {
+	outline: 2px solid var(--accent-line);
+	outline-offset: 2px;
+}
+.topbar-usage-trigger > svg {
+	color: var(--text-muted);
+}
+.topbar-usage-trigger > strong {
+	min-width: 27px;
+	color: var(--text-primary);
+	font-size: 11px;
+	font-weight: 600;
+	font-variant-numeric: tabular-nums;
+	text-align: right;
+}
+.topbar-usage-meter {
+	height: 4px;
+	overflow: hidden;
+	border-radius: 999px;
+	background: var(--border-default);
+}
+.topbar-usage-meter > span {
+	display: block;
+	height: 100%;
+	border-radius: inherit;
+	background: var(--accent);
+	transition: width 180ms ease;
+}
+.topbar-usage-trigger.is-warning > svg,
+.topbar-usage-trigger.is-warning > strong {
+	color: var(--warning);
+}
+.topbar-usage-trigger.is-warning .topbar-usage-meter > span {
+	background: var(--warning);
+}
 .topbar-divider {
 	width: 1px;
 	height: 22px;

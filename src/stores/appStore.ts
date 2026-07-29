@@ -59,9 +59,9 @@ export function selectPreferredModel(model: OmpModel) {
   setPreferredThinkingLevel(resolveEffortConfig(model, thinkingLevel()).selectedValue);
 }
 
-export function applyModelCatalog(models: OmpModel[]) {
+export function applyModelCatalog(models: OmpModel[], preferredSelector?: string) {
   setAvailableModels(models);
-  const selected = models.find(model => model.selector === activeModel()) ?? models.find(model => model.selector === recentModelSelectors()[0]) ?? models[0];
+  const selected = models.find(model => model.selector === preferredSelector) ?? models.find(model => model.selector === activeModel()) ?? models.find(model => model.selector === recentModelSelectors()[0]) ?? models[0];
   if (selected) selectPreferredModel(selected); else setActiveModel('');
 }
 export const [activeProject, setActiveProject] = createSignal<ProjectSummary | null>(null);

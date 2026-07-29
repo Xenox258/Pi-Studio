@@ -4,6 +4,14 @@
 .roles-table > header, .role-row { display: grid; grid-template-columns: minmax(270px, 1.35fr) minmax(170px, .9fr) minmax(150px, .7fr); gap: 32px; align-items: center; }
 .roles-table > header { height: 45px; padding: 0 18px; color: var(--text-secondary); border-bottom: 1px solid var(--border-default); }
 .role-row { min-height: 79px; padding: 10px 18px; border-bottom: 1px solid var(--border-default); }
+.models-unavailable { min-height: 190px; padding: 30px; display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 14px 16px; align-content: center; background: linear-gradient(135deg, rgba(229,179,68,.055), transparent 58%); }
+.models-unavailable__icon { width: 42px; height: 42px; display: grid; place-items: center; border: 1px solid rgba(229,179,68,.28); border-radius: var(--radius-md); background: rgba(229,179,68,.08); color: var(--warning); }
+.models-unavailable__copy { min-width: 0; display: grid; gap: 5px; }
+.models-unavailable__copy > strong { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.models-unavailable__copy p { max-width: 560px; color: var(--text-secondary); font-size: 13px; line-height: 1.5; }
+.models-unavailable__copy small { margin-top: 3px; color: var(--warning); overflow-wrap: anywhere; }
+.models-unavailable__actions { grid-column: 2; display: flex; flex-wrap: wrap; gap: 8px; }
+.models-unavailable__actions .button { min-height: 32px; }
 .role-name { display: flex; align-items: center; gap: 13px; }
 .role-name > div { display: grid; }
 .role-name small { max-width: 250px; }

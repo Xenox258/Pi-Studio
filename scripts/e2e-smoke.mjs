@@ -119,6 +119,7 @@ try {
         window.__calls.push({ command, args });
         if (command === 'get_studio_settings') return { processPolicy: 'Economy', suspendBackground: true, cacheLimitMb: 100, onboardingCompleted: sessionStorage.getItem('onboarding') === 'done', connectedProviders: readConnected() };
         if (command === 'save_studio_settings') { if (args.settings.onboardingCompleted) sessionStorage.setItem('onboarding', 'done'); return; }
+        if (command === 'available_models' && sessionStorage.getItem('models-unavailable') === '1') return [];
         if (command === 'available_models') return [
           { provider: 'openai-codex', id: 'gpt-5.6-sol', selector: 'openai-codex/gpt-5.6-sol', name: 'GPT 5.6 Sol', contextWindow: 272000, maxTokens: 128000, reasoning: true, thinking: ['low', 'medium', 'high', 'xhigh', 'max'], input: ['text'] },
           { provider: 'anthropic', id: 'claude-fable-5', selector: 'anthropic/claude-fable-5', name: 'Claude Fable 5', contextWindow: 1000000, maxTokens: 128000, reasoning: true, thinking: ['low', 'medium', 'high', 'xhigh', 'max'], input: ['text'] },
@@ -138,7 +139,8 @@ try {
           { provider: 'ollama', id: 'qwen3.5:9b', selector: 'ollama/qwen3.5:9b', name: 'Qwen 3.5 9B', contextWindow: 128000, maxTokens: 32768, reasoning: false, thinking: [], input: ['text'] },
         ];
         if (command === 'available_providers') return [{ id: 'anthropic', name: 'Anthropic' }, { id: 'openai', name: 'OpenAI API' }, { id: 'xai-oauth', name: 'xAI Grok OAuth' }, { id: 'lm-studio', name: 'LM Studio' }];
-        if (command === 'get_role_mappings') return [{ id: 'default', label: 'Default', description: 'Fallback role', model: 'openai-codex/gpt-live', thinking: 'High', tone: 'purple' }];
+        if (command === 'get_role_mappings') return JSON.parse(sessionStorage.getItem('role-mappings') || '[{"id":"default","label":"Default","description":"Fallback role","model":"anthropic/claude-fable-5","thinking":"High","tone":"purple"}]');
+        if (command === 'save_role_mappings') { sessionStorage.setItem('role-mappings', JSON.stringify(args.roles)); return; }
         if (command === 'catalog_marketplaces') return [{ name: 'studio-smoke', source: '/tmp/marketplace' }];
         if (command === 'catalog_packages') {
           const mode = args.mode;
@@ -240,12 +242,66 @@ try {
 
 	await evaluate(`sessionStorage.setItem('onboarding', 'done')`);
 	await navigate("/models", "Models & Roles");
+	await retry(async () =>
+		evaluate(`window.__calls.some(call => call.command === 'get_role_mappings')`),
+	);
 	const models = await evaluate(
-		`({ live: document.body.innerText.includes('GPT 5.6 Sol'), fake: document.body.innerText.includes('GPT-4o'), overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth })`,
+		`({ live: document.body.innerText.includes('GPT 5.6 Sol'), fake: document.body.innerText.includes('GPT-4o'), roles: [...document.querySelectorAll('.role-name strong')].map(node => node.textContent), overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth })`,
 	);
 	assert(
 		models.live && !models.fake && !models.overflow,
 		"Live model contract failed",
+	);
+	assert(
+		JSON.stringify(models.roles) ===
+			JSON.stringify(["Default", "Smol", "Slow", "Plan", "Advisor", "Vision", "Task", "Designer"]),
+		"Built-in OMP roles were replaced by the partial stored mapping: " +
+			JSON.stringify(models.roles),
+	);
+	const storedDefault = await evaluate(
+		`({ mapping: document.querySelector('.role-row select')?.value, active: document.querySelector('a[href="/models"]')?.getAttribute('aria-label'), usage: document.querySelector('.topbar-usage-trigger strong')?.textContent })`,
+	);
+	assert(
+		storedDefault.mapping === "anthropic/claude-fable-5" &&
+			storedDefault.active === "Models · Claude Fable 5" &&
+			storedDefault.usage === "2%",
+		"The stored Default role did not initialize the active model and usage provider: " +
+			JSON.stringify(storedDefault),
+	);
+	await evaluate(
+		`(() => { const select = document.querySelector('.role-row select'); const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set; setter.call(select, 'openai-codex/gpt-5.6-sol'); select.dispatchEvent(new Event('change', { bubbles: true })); })()`,
+	);
+	const openAiDefault = await evaluate(
+		`({ active: document.querySelector('a[href="/models"]')?.getAttribute('aria-label'), usage: document.querySelector('.topbar-usage-trigger strong')?.textContent })`,
+	);
+	assert(
+		openAiDefault.active === "Models · GPT 5.6 Sol" && openAiDefault.usage === "96%",
+		"Reactivating the GPT Default role did not update the workspace: " +
+			JSON.stringify(openAiDefault),
+	);
+	await evaluate(
+		`([...document.querySelectorAll('.summary-actions button')].find(button => button.textContent.includes('Save globally'))).click()`,
+	);
+	await retry(async () =>
+		evaluate(`window.__calls.some(call => call.command === 'save_role_mappings')`),
+	);
+	await evaluate(`sessionStorage.setItem('models-unavailable', '1')`);
+	await navigate('/models', 'No models available');
+	const unavailableModels = await evaluate(
+		`(() => { const state = document.querySelector('.models-unavailable'); return { alert: state?.getAttribute('role'), actions: [...state?.querySelectorAll('.button') ?? []].map(button => button.textContent.trim()), roles: document.querySelectorAll('.role-row').length, overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth }; })()`,
+	);
+	assert(
+		unavailableModels.alert === 'alert' &&
+			JSON.stringify(unavailableModels.actions) === JSON.stringify(['Retry', 'Open providers']) &&
+			unavailableModels.roles === 0 &&
+			!unavailableModels.overflow,
+		'Model recovery state is incomplete or overflows: ' + JSON.stringify(unavailableModels),
+	);
+	await evaluate(
+		`sessionStorage.removeItem('models-unavailable'); document.querySelector('.models-unavailable button').click()`,
+	);
+	await retry(async () =>
+		evaluate(`document.querySelectorAll('.role-row').length === 8 && !document.querySelector('.models-unavailable')`),
 	);
 	await navigate("/", "OMP workspace");
 
@@ -541,7 +597,8 @@ try {
 		`({ recent: JSON.parse(localStorage.getItem('omp-studio:recent-models') || '[]'), effort: localStorage.getItem('omp-studio:thinking-level') })`,
 	);
 	assert(
-		persistedPreferences.recent[0] === "deepseek/deepseek-v4-pro" &&
+		persistedPreferences.recent[0] === "openai-codex/gpt-5.6-sol" &&
+			persistedPreferences.recent.includes("deepseek/deepseek-v4-pro") &&
 			persistedPreferences.effort === "high",
 		"Model and effort preferences were not persisted: " +
 			JSON.stringify(persistedPreferences),

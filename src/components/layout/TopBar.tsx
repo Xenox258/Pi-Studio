@@ -1,9 +1,9 @@
-import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
+import { For, Show, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
 import { ChevronDown, FolderOpen, Gauge, PanelRight } from 'lucide-solid';
 import { open } from '@tauri-apps/plugin-dialog';
 import { activeModel, activeProject, activeSession, availableModels, rightPanelOpen, setRightPanelOpen, startConfiguredSession } from '../../stores/appStore';
 import { studioApi } from '../../api/invoke';
-import { Badge, IconButton, Popover, ProgressBar } from '../ui';
+import { IconButton, Popover, ProgressBar } from '../ui';
 import { formatReset, primaryLimit } from '../../models/usage';
 import { refreshUsage, usageSnapshot } from '../../stores/usageStore';
 
@@ -36,13 +36,22 @@ export default function TopBar() {
     const account = provider.accounts.find(item => item.activeForSession) ?? provider.accounts[0];
     return account ? primaryLimit(account) : undefined;
   };
-  const activePercent = () => { const limit = activeLimit(); return limit ? Math.round(limit.usedPercent) : undefined; };
+  const activePercent = createMemo(() => { const limit = activeLimit(); return limit ? Math.round(limit.usedPercent) : undefined; });
+  const usageFill = () => Math.min(100, Math.max(0, activePercent() ?? 0));
+  const usageWarning = () => usageFill() >= 85;
 
   return <header class="topbar">
     <div class="topbar-context"><strong>{activeSession()?.title ?? 'OMP workspace'}</strong><span>{activeProject()?.name ?? 'No project open'}</span></div>
     <div class="topbar-controls">
       <button class="topbar-action project-switcher" aria-label={activeProject()?.name ? `Open another project · ${activeProject()!.name}` : 'Open a project'} title={activeProject()?.path ?? 'Open a project'} onClick={() => void chooseProject()}><FolderOpen size={16} /><span>Open</span><ChevronDown size={14} /></button>
-      <Popover label="Usage summary" trigger={<Badge tone={activePercent() !== undefined && activePercent()! >= 90 ? 'warning' : 'default'}><Gauge size={13} />{activePercent() === undefined ? 'Usage —' : `Usage ${activePercent()}%`}</Badge>}>
+      <Popover label="Usage summary" trigger={
+        <span class={`topbar-usage-trigger ${usageWarning() ? 'is-warning' : ''}`}>
+          <Gauge size={14} />
+          <span class="topbar-usage-label">Usage</span>
+          <span class="topbar-usage-meter" aria-hidden="true"><span style={{ width: `${usageFill()}%` }} /></span>
+          <strong>{activePercent() === undefined ? '—' : `${activePercent()}%`}</strong>
+        </span>
+      }>
         <div class="topbar-usage">
           <strong>Provider usage</strong>
           <For each={usageSnapshot()?.providers ?? []}>{provider => {
