@@ -1,7 +1,7 @@
 import { createSignal } from 'solid-js';
 import type { AdvisorMessageItem, AssistantMessageItem, ConversationNotice, ConversationRun, FileAttachment, ImageAttachment, OmpMessage, OmpModel, ProjectSummary, SessionSummary, ToolActivityStatus, UserMessageItem } from '../types';
 import { studioApi } from '../api/invoke';
-import { resolveEffortConfig } from '../models/effort';
+import { normalizeEffortValue, resolveEffortConfig } from '../models/effort';
 import { createToolActivity, hasPendingToolConfirmation, reconstructConversationRuns, updateToolActivity } from '../models/conversation';
 
 const recentModelStorageKey = 'omp-studio:recent-models';
@@ -61,8 +61,36 @@ export function selectPreferredModel(model: OmpModel) {
 
 export function applyModelCatalog(models: OmpModel[], preferredSelector?: string) {
   setAvailableModels(models);
-  const selected = models.find(model => model.selector === preferredSelector) ?? models.find(model => model.selector === activeModel()) ?? models.find(model => model.selector === recentModelSelectors()[0]) ?? models[0];
-  if (selected) selectPreferredModel(selected); else setActiveModel('');
+  const currentSelector = activeModel();
+  const selected = models.find(model => model.selector === preferredSelector)
+    ?? models.find(model => model.selector === recentModelSelectors()[0])
+    ?? models.find(model => model.selector === currentSelector)
+    ?? (!currentSelector ? models[0] : undefined);
+  if (selected) selectPreferredModel(selected);
+  else if (!currentSelector) setActiveModel('');
+}
+
+export const [modelCatalogLoading, setModelCatalogLoading] = createSignal(false);
+export const [modelCatalogError, setModelCatalogError] = createSignal<string | null>(null);
+let modelCatalogBootstrap: Promise<void> | undefined;
+
+export function bootstrapModelCatalog(): Promise<void> {
+  if (modelCatalogBootstrap) return modelCatalogBootstrap;
+  setModelCatalogLoading(true);
+  setModelCatalogError(null);
+  const pending: Promise<void> = Promise.all([studioApi.models(), studioApi.roles('global').catch(() => [])])
+    .then(([catalog, roles]) => {
+      if (!catalog.length) throw new Error('OMP returned an empty model catalog. Check that at least one provider is connected.');
+      applyModelCatalog(catalog, roles.find(role => role.id === 'default')?.model);
+    })
+    .catch(cause => {
+      setModelCatalogError(cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : 'Unable to load the OMP model catalog.');
+      throw cause;
+    })
+    .finally(() => setModelCatalogLoading(false));
+  modelCatalogBootstrap = pending;
+  void pending.catch(() => { if (modelCatalogBootstrap === pending) modelCatalogBootstrap = undefined; });
+  return pending;
 }
 export const [activeProject, setActiveProject] = createSignal<ProjectSummary | null>(null);
 export const [activeSession, setActiveSession] = createSignal<SessionSummary | null>(null);
@@ -337,22 +365,49 @@ export async function createAndStartProject(parentPath: string, name: string): P
 
 async function bootConfiguredSession(projectPath: string): Promise<ProjectSummary> {
   setSessionLoading(true);
+  setSessionConnecting(true);
+  setSessionLive(false);
   try {
     const opened = await studioApi.openProject(projectPath);
     const id = await studioApi.startSession(opened.id, opened.path, advisorEnabled());
+    const configuration = await studioApi.sessionConfiguration(id);
+    const preferredEffort = readStoredValue(thinkingStorageKey) ?? thinkingLevel();
+    const runtimeModel = availableModels().find(model => model.selector === configuration.model);
+    if (configuration.model) setActiveModel(configuration.model);
+    if (configuration.thinkingLevel) {
+      setThinkingLevel(runtimeModel ? resolveEffortConfig(runtimeModel, configuration.thinkingLevel).selectedValue : normalizeEffortValue(configuration.thinkingLevel));
+    }
+    setConversationRuns([]);
+    setConversationNotices([]);
+    let catalogReady = true;
     try {
-      const model = availableModels().find(candidate => candidate.selector === activeModel());
-      if (model) await studioApi.setModel(id, model.selector);
-      const effort = resolveEffortConfig(model, thinkingLevel());
-      const option = effort.options.find(candidate => candidate.value === effort.selectedValue);
-      if (effort.configurable && option) await studioApi.setThinking(id, option.backendValue);
-    } catch (configError) {
-      await studioApi.stopSession(id);
-      throw configError;
+      await bootstrapModelCatalog();
+    } catch (catalogError) {
+      catalogReady = false;
+      const detail = catalogError instanceof Error ? catalogError.message : typeof catalogError === 'string' ? catalogError : 'OMP did not return its model catalog';
+      const runtimeSelector = configuration.model ? ` (${configuration.model})` : '';
+      appendConversationNotice('Model catalog unavailable', `${detail}. This live session keeps the runtime model${runtimeSelector} and effort reported by OMP. Model preferences can be applied after the catalog becomes available on a later session.`);
+    }
+    if (catalogReady) {
+      try {
+        const model = availableModels().find(candidate => candidate.selector === recentModelSelectors()[0])
+          ?? availableModels().find(candidate => candidate.selector === activeModel());
+        if (model) {
+          await studioApi.setModel(id, model.selector);
+          const effort = resolveEffortConfig(model, preferredEffort);
+          const option = effort.options.find(candidate => candidate.value === effort.selectedValue);
+          if (effort.configurable && option) await studioApi.setThinking(id, option.backendValue);
+          setActiveModel(model.selector);
+          rememberModel(model.selector);
+          setPreferredThinkingLevel(effort.selectedValue);
+        }
+      } catch (configError) {
+        await studioApi.stopSession(id);
+        throw configError;
+      }
     }
     setActiveProject(opened);
     setActiveSession({ id, title: 'New session', projectId: opened.id, updatedAt: new Date().toISOString(), active: true });
-    setConversationRuns([]); setConversationNotices([]);
     // Starting a session only resolves once OMP reports ready, so this one can take prompts.
     setSessionLive(true);
     return opened;
@@ -360,6 +415,7 @@ async function bootConfiguredSession(projectPath: string): Promise<ProjectSummar
     setSessionLive(false);
     throw error;
   } finally {
+    setSessionConnecting(false);
     setSessionLoading(false);
   }
 }

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
-use crate::errors::{StudioError, StudioResult};
+use crate::{errors::{StudioError, StudioResult}, startup::StartupPhase};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,9 +25,24 @@ pub struct OmpProvider { pub id: String, pub name: String }
 struct ModelCatalog { models: Vec<OmpModel> }
 
 pub async fn available() -> StudioResult<Vec<OmpModel>> {
-    let output = Command::new("omp").args(["models", "--json"]).output().await.map_err(|error| StudioError::OmpUnavailable(error.to_string()))?;
-    if !output.status.success() { return Err(StudioError::Omp(String::from_utf8_lossy(&output.stderr).trim().to_owned())); }
-    parse(&output.stdout)
+    let models = StartupPhase::begin("omp", "models");
+    let output = match Command::new("omp").args(["--no-extensions", "models", "--json"]).output().await {
+        Ok(output) => output,
+        Err(error) => {
+            let error = StudioError::OmpUnavailable(error.to_string());
+            models.failed(&error);
+            return Err(error);
+        }
+    };
+    if !output.status.success() {
+        let error = StudioError::Omp(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+        models.failed(&error);
+        return Err(error);
+    }
+    match parse(&output.stdout) {
+        Ok(available) => { models.completed(); Ok(available) }
+        Err(error) => { models.failed(&error); Err(error) }
+    }
 }
 
 pub async fn available_providers() -> StudioResult<Vec<OmpProvider>> {

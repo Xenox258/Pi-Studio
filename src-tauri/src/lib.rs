@@ -3,6 +3,7 @@ mod errors;
 mod omp;
 mod services;
 mod state;
+mod startup;
 mod storage;
 mod usage;
 
@@ -16,13 +17,21 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(tauri_plugin_log::Builder::default().level(log::LevelFilter::Info).max_file_size(4_000_000).build())?;
+            startup::register_app(app.handle());
+            let backend = startup::StartupPhase::begin("studio", "backend-ready");
+            let result: Result<(), Box<dyn std::error::Error>> = (|| {
+                if cfg!(debug_assertions) {
+                    app.handle().plugin(tauri_plugin_log::Builder::default().level(log::LevelFilter::Info).max_file_size(4_000_000).build())?;
+                }
+                let data_dir = app.path().app_data_dir()?;
+                let state = AppState::new(&data_dir).map_err(|error| error.to_string())?;
+                app.manage(state);
+                Ok(())
+            })();
+            match result {
+                Ok(()) => { backend.completed(); Ok(()) }
+                Err(error) => { backend.failed(&error); Err(error) }
             }
-            let data_dir = app.path().app_data_dir()?;
-            let state = AppState::new(&data_dir).map_err(|error| error.to_string())?;
-            app.manage(state);
-            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             detect_omp_capabilities, get_studio_settings, save_studio_settings, runtime_stats, catalog_packages, catalog_marketplaces, add_catalog_marketplace, catalog_readme, available_models, available_providers, open_project, create_project, recent_projects, recent_sessions, set_session_title, start_session, resume_session, stop_session, delete_session, send_prompt, steer_prompt, follow_up_prompt, stop_run, conversation_history, session_configuration, session_snapshot, available_commands,

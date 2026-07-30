@@ -20,6 +20,7 @@
     "verify": "npm run build && npm run test:frontend && npm run test:e2e && npm run test:rust",
     "benchmark": "node scripts/performance.mjs",
     "benchmark:runtime": "node scripts/runtime-performance.mjs",
+    "benchmark:startup": "node scripts/startup-benchmark.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
