@@ -42,6 +42,10 @@ const interactiveReadinessGuardSource = protectedShellSource.slice(interactiveEf
 const interactivePaintSource = protectedShellSource.slice(firstInteractiveFrameAt, interactiveLogAt);
 const interactiveCleanupSource = protectedShellSource.slice(interactiveCleanupAt);
 const storeSource = readFileSync(new URL('../src/stores/appStore.ts', import.meta.url), 'utf8');
+const workspaceSource = readFileSync(new URL('../src/pages/workspace/WorkspacePage.tsx', import.meta.url), 'utf8');
+const ecosystemSource = readFileSync(new URL('../src/pages/ecosystem/EcosystemPage.tsx', import.meta.url), 'utf8');
+const sidebarSource = readFileSync(new URL('../src/components/layout/Sidebar.tsx', import.meta.url), 'utf8');
+const catalogLoadingSource = readFileSync(new URL('../src/stores/catalogLoadingStore.ts', import.meta.url), 'utf8');
 const applyCatalogSource = storeSource.slice(storeSource.indexOf('export function applyModelCatalog'), storeSource.indexOf('export const [modelCatalogLoading'));
 const bootstrapSource = storeSource.slice(storeSource.indexOf('export function bootstrapModelCatalog'), storeSource.indexOf('export const [activeProject'));
 const bootSource = storeSource.slice(storeSource.indexOf('async function bootConfiguredSession'));
@@ -76,6 +80,16 @@ requireContract(applyCatalogSource.includes('(!currentSelector ?') && applyCatal
 requireContract(preferredConfigurationSource.includes('candidate.selector === recentModelSelectors()[0]') && preferredConfigurationSource.includes('resolveEffortConfig(model, preferredEffort)') && preferredConfigurationSource.includes('setActiveModel(model.selector)') && preferredConfigurationSource.includes('setPreferredThinkingLevel(effort.selectedValue)'), 'successful catalog bootstrap restores the valid model and effort preference');
 requireContract(catalogFailureAt >= 0 && configureAt > catalogFailureAt && !catalogFailureSource.includes("setActiveModel('')") && catalogFailureSource.includes("appendConversationNotice('Model catalog unavailable'") && catalogFailureSource.includes('runtime model') && !catalogFailureSource.includes('stopSession') && storeSource.includes('?.name ?? activeModel()'), 'catalog failure keeps a truthful runtime label, emits a notice, and leaves the session usable');
 requireContract(bootSource.indexOf('setSessionLive(true)') > configureAt, 'a catalog failure can still reach the live session state');
+requireContract(workspaceSource.includes("createResource('workspace-package-updates', () => studioApi.catalog('updates'))"), 'workspace starts one stable updates resource when the rail mounts');
+requireContract(workspaceSource.includes('updates.loading') && workspaceSource.includes('updates.error') && workspaceSource.includes('Checking package updates…') && workspaceSource.includes('No updates available') && workspaceSource.includes("'update' : 'updates'"), 'workspace renders mutually exclusive loading, error, zero, singular, and plural update states');
+requireContract(workspaceSource.includes('role="status"') && workspaceSource.includes('aria-live="polite"') && workspaceSource.includes('role="alert"'), 'workspace update feedback is announced accessibly');
+requireContract(workspaceSource.includes("navigate('/updates')") && workspaceSource.includes('>Updates</Button>'), 'workspace preserves the Updates recovery action');
+requireContract(catalogLoadingSource.includes('"unknown" | "loading"') && catalogLoadingSource.includes('{ kind: "error"; message: string }') && catalogLoadingSource.includes('{ kind: "ready"; count: number }'), 'marketplace shares explicit unknown, loading, error, and ready update states');
+requireContract(ecosystemSource.includes("mode === 'updates') setCatalogUpdatesState({ kind: 'loading' })") && ecosystemSource.includes("setCatalogUpdatesState({ kind: 'ready', count: packages.length })") && ecosystemSource.includes("setCatalogUpdatesState({ kind: 'error', message })") && ecosystemSource.includes("setCatalogUpdatesState({ kind: 'unknown' })"), 'updates state follows request, cache success, rejection, and invalidation');
+requireContract(ecosystemSource.includes('catalogGeneration') && ecosystemSource.includes('generation === catalogGeneration'), 'stale catalog results cannot overwrite update state');
+requireContract(ecosystemSource.includes('Update available') && occurrences(ecosystemSource, 'props.item.updateAvailable') >= 3 && ecosystemSource.includes("type Action = 'install' | 'uninstall' | 'upgrade'") && ecosystemSource.includes("manage(item, 'install')") && ecosystemSource.includes("onAction('upgrade')"), 'Discover, detail, and installed rows expose updateAvailable without changing package actions');
+requireContract(ecosystemSource.includes('Checking for package updates…') && ecosystemSource.includes('No updates available') && ecosystemSource.includes('Update check failed:') && ecosystemSource.includes("knownUpdatesCount() ?? '—'"), 'Updates route never invents zero while status is unknown, loading, or failed');
+requireContract(sidebarSource.includes('knownUpdateCount') && sidebarSource.includes('state.count > 0') && sidebarSource.includes('nav-item__count') && sidebarSource.includes('aria-label={item.mode === "updates"'), 'Sidebar shows only a known positive update count and includes it in the accessible label');
 
 try {
   server = spawn('npm', ['run', 'preview', '--', '--host', host, '--port', port, '--strictPort'], { detached: true, stdio: 'ignore' });
@@ -97,6 +111,9 @@ try {
   requireText(workspace, 'Ask OMP Studio anything', '/');
   requireText(workspace, 'Active model', '/');
   if (workspace.includes('GPT-4o')) throw new Error('Workspace rendered a fabricated model');
+  if (workspace.includes('No updates available')) throw new Error('Workspace preview rendered a fabricated zero-update result');
+  const updates = render('/updates');
+  requireText(updates, 'Package update status is available in the installed OMP Studio app.', '/updates');
   const usage = render('/usage');
   requireText(usage, 'Usage is available in the installed OMP Studio application.', '/usage');
   if (usage.includes('developer@example.com')) throw new Error('Usage page rendered fabricated account data');

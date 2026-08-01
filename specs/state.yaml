@@ -10,10 +10,12 @@ bug_cycle:
   completed_steps: [diagnose-root, implement, verify]
 git:
   branch: feat/commit-features
-  hash: d9c6b7e
+  hash: e339559
 handoff:
-  last_step_completed: verified optimized startup and real release launch
+  last_step_completed: fixed and verified selected npm package updates
   open_decisions:
     - Keep OMP 17.2.1; core RPC reaches ready around 1.4 seconds without extensions.
     - Use the verified --no-extensions flag for metadata-only model discovery.
+    - Reconcile installed npm packages against cached Pi Catalog semver data; Pi Lens 3.8.71 correctly detects 3.8.73.
+    - Route npm package upgrades through `omp plugin install`; keep marketplace packages on `omp plugin upgrade`.
   next_skill: commit-message

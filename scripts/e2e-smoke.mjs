@@ -109,7 +109,7 @@ try {
 	await send("Page.addScriptToEvaluateOnNewDocument", {
 		source: `
     window.__calls = []; window.__sessionStarted = false; window.__newSessionTitle = 'New session';
-    window.__catalogCalls = { discover: 0, installed: 0, updates: 0, local: 0 }; window.__holdDiscover = false; window.__releaseDiscover = undefined;
+    window.__catalogCalls = { discover: 0, installed: 0, updates: 0, local: 0 }; window.__holdDiscover = false; window.__releaseDiscover = undefined; window.__holdUpdates = false; window.__releaseUpdates = undefined; window.__catalogUpdatesResponse = 'one'; window.__rejectUpdates = false;
     window.__listeners = {};
     const readConnected = () => JSON.parse(sessionStorage.getItem('connected') || '[]');
     const writeConnected = list => sessionStorage.setItem('connected', JSON.stringify(list));
@@ -147,7 +147,12 @@ try {
           if (!(mode in window.__catalogCalls)) throw new Error('Unexpected catalog mode: ' + mode);
           window.__catalogCalls[mode]++;
           if (mode === 'discover' && window.__holdDiscover && window.__catalogCalls.discover === 1) await new Promise(resolve => { window.__releaseDiscover = resolve; });
-          return mode === 'discover' ? [{ id: 'studio-tool@studio-smoke', name: 'studio-tool', author: 'studio-smoke', description: 'Reported by OMP', kind: 'Package', version: '1.2.3', installed: false, updateAvailable: false, compatibility: 'OMP marketplace', permissions: [], resources: [] }] : [];
+          if (mode === 'updates' && window.__holdUpdates && window.__catalogCalls.updates === 1) await new Promise(resolve => { window.__releaseUpdates = resolve; });
+          if (mode === 'updates' && window.__rejectUpdates) throw 'catalog update check failed: marketplace unavailable';
+          const update = { id: 'studio-tool@studio-smoke', name: 'studio-tool', author: 'studio-smoke', description: 'Reported by OMP', kind: 'Package', version: '1.2.3', installed: true, updateAvailable: true, compatibility: 'OMP marketplace', permissions: [], resources: [] };
+          if (mode === 'updates') return window.__catalogUpdatesResponse === 'zero' ? [] : [update];
+          if (mode === 'installed' || mode === 'discover') return [update];
+          return [];
         }
         if (command === 'recent_projects') return [{ id: 'p1', name: 'Demo Project', path: '/tmp/demo' }];
         if (command === 'recent_sessions') return [...(window.__sessionStarted ? [{ id: 'sess-1', title: window.__newSessionTitle, projectId: 'p1', updatedAt: new Date().toISOString(), active: true }] : []), { id: 'past-1', title: 'Past session', projectId: 'p1', updatedAt: '2026-07-20T12:00:00Z', active: false }];
@@ -427,6 +432,71 @@ try {
 				JSON.stringify(warmedRoute.calls),
 		);
 	}
+
+	// Scenario 2b — workspace update checks expose loading, result, empty, and error without duplicate calls.
+	const discoverUpdateState = await evaluate(
+		`({ card: [...document.querySelectorAll('.discover-card')].some(card => card.innerText.includes('Update available')), sidebarCount: document.querySelector('a[href="/updates"] .nav-item__count')?.textContent, sidebarLabel: document.querySelector('a[href="/updates"]')?.getAttribute('aria-label') })`,
+	);
+	assert(
+		discoverUpdateState.card && discoverUpdateState.sidebarCount === "1" && discoverUpdateState.sidebarLabel.includes("1 update available"),
+		"Discover or Sidebar did not expose the known update: " + JSON.stringify(discoverUpdateState),
+	);
+	await evaluate(
+		`(() => { window.__catalogCalls.updates = 0; window.__catalogUpdatesResponse = 'one'; window.__rejectUpdates = false; window.__holdUpdates = true; window.__releaseUpdates = undefined; document.querySelector('.brand').click(); return true; })()`,
+	);
+	await retry(async () =>
+		evaluate(`location.pathname === '/' && window.__catalogCalls.updates === 1 && document.querySelector('.recommendation [role="status"]')?.textContent.includes('Checking package updates')`),
+	);
+	await evaluate(
+		`(async () => { const brand = document.querySelector('.brand'); for (let activation = 0; activation < 3; activation++) { brand.click(); await Promise.resolve(); } await new Promise(resolve => requestAnimationFrame(resolve)); return true; })()`,
+	);
+	const heldWorkspaceUpdates = await evaluate(
+		`({ calls: window.__catalogCalls.updates, loading: document.querySelector('.recommendation [role="status"]')?.textContent ?? '', action: [...document.querySelectorAll('.recommendation button')].some(button => button.textContent.trim() === 'Updates') })`,
+	);
+	assert(
+		heldWorkspaceUpdates.calls === 1 && heldWorkspaceUpdates.loading.includes("Checking package updates") && heldWorkspaceUpdates.action,
+		"Workspace update loading was duplicated or lost: " + JSON.stringify(heldWorkspaceUpdates),
+	);
+	await evaluate(
+		`(() => { const release = window.__releaseUpdates; if (typeof release !== 'function') throw new Error('Updates release missing'); window.__holdUpdates = false; window.__releaseUpdates = undefined; release(); return true; })()`,
+	);
+	await retry(async () => evaluate(`document.querySelector('.recommendation')?.innerText.includes('1 update available')`));
+	await evaluate(`([...document.querySelectorAll('.recommendation button')].find(button => button.textContent.trim() === 'Updates')).click()`);
+	await retry(async () =>
+		evaluate(`location.pathname === '/updates' && document.querySelector('.catalog-update-summary')?.textContent.includes('1 update available') && !!document.querySelector('.detail-actions')`),
+	);
+	const updatesRoute = await evaluate(
+		`({ count: document.querySelector('.catalog-update-summary')?.textContent ?? '', row: document.querySelector('.package-row')?.innerText ?? '', action: [...document.querySelectorAll('.detail-actions button')].some(button => button.textContent.trim() === 'Update'), calls: window.__catalogCalls.updates })`,
+	);
+	assert(
+		updatesRoute.count.includes("1 update available") && updatesRoute.row.includes("Update available") && updatesRoute.action && updatesRoute.calls === 1,
+		"Updates route did not preserve the count, row status, and Update action: " + JSON.stringify(updatesRoute),
+	);
+
+	await evaluate(`document.querySelector('a[href="/discover"]').click()`);
+	await retry(async () => evaluate(`location.pathname === '/discover'`));
+	await evaluate(`(() => { window.__catalogCalls.updates = 0; window.__catalogUpdatesResponse = 'zero'; window.__rejectUpdates = false; document.querySelector('.brand').click(); return true; })()`);
+	await retry(async () => evaluate(`document.querySelector('.recommendation')?.innerText.includes('No updates available')`));
+	const zeroWorkspaceUpdates = await evaluate(
+		`({ calls: window.__catalogCalls.updates, text: document.querySelector('.recommendation')?.innerText ?? '', action: [...document.querySelectorAll('.recommendation button')].some(button => button.textContent.trim() === 'Updates') })`,
+	);
+	assert(
+		zeroWorkspaceUpdates.calls === 1 && zeroWorkspaceUpdates.text.includes("No updates available") && !zeroWorkspaceUpdates.text.includes("0 updates available") && zeroWorkspaceUpdates.action,
+		"Workspace zero-update state invented a count or lost its action: " + JSON.stringify(zeroWorkspaceUpdates),
+	);
+
+	await evaluate(`document.querySelector('a[href="/discover"]').click()`);
+	await retry(async () => evaluate(`location.pathname === '/discover'`));
+	await evaluate(`(() => { window.__catalogCalls.updates = 0; window.__catalogUpdatesResponse = 'one'; window.__rejectUpdates = true; document.querySelector('.brand').click(); return true; })()`);
+	await retry(async () => evaluate(`document.querySelector('.recommendation [role="alert"]')?.textContent.includes('marketplace unavailable')`));
+	const failedWorkspaceUpdates = await evaluate(
+		`({ calls: window.__catalogCalls.updates, error: document.querySelector('.recommendation [role="alert"]')?.textContent ?? '', action: [...document.querySelectorAll('.recommendation button')].some(button => button.textContent.trim() === 'Updates') })`,
+	);
+	assert(
+		failedWorkspaceUpdates.calls === 1 && failedWorkspaceUpdates.error.includes("Update check failed") && failedWorkspaceUpdates.error.includes("marketplace unavailable") && failedWorkspaceUpdates.action,
+		"Workspace update error was not actionable: " + JSON.stringify(failedWorkspaceUpdates),
+	);
+
 	await navigate("/", "OMP workspace");
 	await retry(async () =>
 		evaluate(
@@ -1639,7 +1709,7 @@ try {
 	);
 	await send("Network.setBlockedURLs", { urls: [] });
 
-	console.log(JSON.stringify({ scenarios: 13, assertions, status: "ok" }));
+	console.log(JSON.stringify({ scenarios: 14, assertions, status: "ok" }));
 } finally {
 	socket?.close();
 	for (const process of [chromium, preview]) {

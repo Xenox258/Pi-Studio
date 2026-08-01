@@ -1,8 +1,9 @@
-use std::{collections::{HashMap, HashSet}, future::Future, time::{Duration, Instant}};
+use std::{collections::HashMap, future::Future, time::{Duration, Instant}};
 
 use serde::Serialize;
 use serde_json::Value;
 use tokio::{process::Command, sync::{Mutex, RwLock}};
+use semver::Version;
 
 use crate::errors::{StudioError, StudioResult};
 
@@ -19,6 +20,8 @@ pub struct CatalogResource { pub r#type: String, pub count: u32 }
 pub struct CatalogMarketplace { pub name: String, pub source: String }
 
 const CATALOG_CACHE_TTL: Duration = Duration::from_secs(1800);
+const MARKETPLACE_PACKAGES_CACHE_KEY: &str = "marketplace-packages";
+const PI_PACKAGES_CACHE_KEY: &str = "pi-packages";
 
 #[derive(Default)]
 pub struct CatalogService {
@@ -84,20 +87,13 @@ impl CatalogService {
     }
 
     async fn discover(&self) -> StudioResult<Vec<CatalogPackage>> {
-        // The Pi package gallery (pi.dev/packages) is the npm registry filtered to the `pi-package`
-        // keyword; mirror it as the default Discover content. Custom OMP marketplaces, when configured,
-        // are appended so nothing a user added is lost.
-        let marketplace_discoveries = async {
-            match self.marketplaces().await {
-                Ok(marketplaces) => discover_marketplace_batches(marketplaces).await,
-                Err(_) => Vec::new(),
-            }
+        // The installed snapshot resolves updates against the Pi npm catalog and custom
+        // marketplaces, then caches both published sources for this Discover view.
+        let installed = self.installed_view(false).await;
+        let pi_catalog = match self.cached(PI_PACKAGES_CACHE_KEY).await {
+            Some(packages) => Ok(packages),
+            None => fetch_pi_catalog().await,
         };
-        let (pi_catalog, installed, marketplace_batches) = tokio::join!(
-            fetch_pi_catalog(),
-            self.installed_identifiers(),
-            marketplace_discoveries,
-        );
         let mut packages = match pi_catalog {
             Ok(packages) => packages,
             Err(error) => {
@@ -105,13 +101,20 @@ impl CatalogService {
                 Vec::new()
             }
         };
-        append_marketplace_batches_in_order(&mut packages, marketplace_batches);
-        // Cross-reference the locally installed set so npm and custom marketplace entries show as installed.
-        if let Ok(installed) = installed {
-            for package in &mut packages {
-                if installed.contains(&package.id) || installed.contains(&package.name) { package.installed = true; }
-            }
-        }
+        let marketplace_packages = if let Some(cached) = self.cached(MARKETPLACE_PACKAGES_CACHE_KEY).await {
+            cached
+        } else {
+            let mut discovered = Vec::new();
+            let batches = match self.marketplaces().await {
+                Ok(marketplaces) => discover_marketplace_batches(marketplaces).await,
+                Err(_) => Vec::new(),
+            };
+            append_marketplace_batches_in_order(&mut discovered, batches);
+            discovered
+        };
+        packages.extend(marketplace_packages);
+        // An unavailable update check must not hide Discover; annotate only from a known snapshot.
+        if let Ok(installed) = installed { mark_discover_packages(&mut packages, &installed); }
         Ok(packages)
     }
 
@@ -129,23 +132,49 @@ impl CatalogService {
         if let Some(value) = self.cached(mode).await { return Ok(value); }
 
         let output = omp_output(&["plugin", "list", "--json"]).await?;
-        let installed = if output.trim().is_empty() { Vec::new() } else { packages_from(serde_json::from_str(&output)?, "installed") };
-        let (installed, updates) = installed_views(installed);
+        let installed_snapshot = if output.trim().is_empty() { Vec::new() } else { packages_from(serde_json::from_str(&output)?, "installed") };
+        let pi_packages = match self.cached(PI_PACKAGES_CACHE_KEY).await {
+            Some(packages) => packages,
+            None => fetch_pi_catalog().await?,
+        };
+        let marketplace_packages = self.available_marketplace_packages().await?;
+        let published = pi_packages.iter().chain(marketplace_packages.iter());
+        let (installed, updates) = installed_views(&installed_snapshot, published);
         let result = if updates_only { updates.clone() } else { installed.clone() };
         let at = Instant::now();
         let mut cache = self.cache.write().await;
         cache.insert("installed".into(), (at, installed));
         cache.insert("updates".into(), (at, updates));
+        cache.insert(PI_PACKAGES_CACHE_KEY.into(), (at, pi_packages));
+        cache.insert(MARKETPLACE_PACKAGES_CACHE_KEY.into(), (at, marketplace_packages));
         Ok(result)
     }
 
-    async fn installed_identifiers(&self) -> StudioResult<HashSet<String>> {
-        let installed = self.installed_view(false).await?;
-        Ok(installed.into_iter().flat_map(|package| [package.id, package.name]).collect())
+    async fn available_marketplace_packages(&self) -> StudioResult<Vec<CatalogPackage>> {
+        let marketplaces = self.marketplaces().await?;
+        let mut packages = Vec::new();
+        for marketplace in marketplaces {
+            let name = marketplace.name.as_str();
+            omp_output(&["plugin", "marketplace", "update", name]).await?;
+            let output = omp_output(&["plugin", "discover", name]).await?;
+            let discovered = discovered_from(&output, &marketplace);
+            if !output.trim().is_empty() && discovered.is_empty() {
+                return Err(StudioError::Omp(format!("omp plugin discover {name} returned unusable output")));
+            }
+            packages.extend(discovered);
+        }
+        Ok(packages)
     }
 }
 
-fn installed_views(installed: Vec<CatalogPackage>) -> (Vec<CatalogPackage>, Vec<CatalogPackage>) {
+fn installed_views<'a>(installed: &[CatalogPackage], published: impl IntoIterator<Item = &'a CatalogPackage>) -> (Vec<CatalogPackage>, Vec<CatalogPackage>) {
+    let available_versions = available_versions(published);
+    let installed = installed.iter().cloned().map(|mut package| {
+        package.update_available |= published_version(&package, &available_versions)
+            .and_then(|available| Version::parse(&package.version).ok().map(|current| available > &current))
+            .unwrap_or(false);
+        package
+    }).collect::<Vec<_>>();
     let updates = installed.iter().filter(|package| package.update_available).cloned().collect();
     (installed, updates)
 }
@@ -180,6 +209,64 @@ fn append_marketplace_batches_in_order(packages: &mut Vec<CatalogPackage>, mut b
     for (_, batch) in batches { packages.extend(batch); }
 }
 
+fn split_marketplace_identifier(identifier: &str) -> (&str, Option<&str>) {
+    let Some((name, marketplace)) = identifier.rsplit_once('@') else { return (identifier, None); };
+    if name.is_empty() || marketplace.is_empty() || marketplace.contains('/') || marketplace.starts_with('@') { return (identifier, None); }
+    (name, Some(marketplace))
+}
+
+fn catalog_identity(package: &CatalogPackage) -> (&str, Option<&str>) {
+    let (name, marketplace) = split_marketplace_identifier(&package.id);
+    if marketplace.is_some() { return (name, marketplace); }
+    let (name, marketplace) = split_marketplace_identifier(&package.name);
+    if marketplace.is_some() { return (name, marketplace); }
+    (package.id.as_str(), None)
+}
+
+fn mark_discover_packages(discovered: &mut [CatalogPackage], installed: &[CatalogPackage]) {
+    for package in discovered {
+        let identity = catalog_identity(package);
+        if let Some(installed_package) = installed.iter().find(|candidate| catalog_identity(candidate) == identity) {
+            package.installed = true;
+            package.update_available = installed_package.update_available;
+        }
+    }
+}
+
+#[derive(Default)]
+struct AvailableVersions {
+    npm: HashMap<String, Version>,
+    marketplaces: HashMap<String, HashMap<String, Version>>,
+}
+
+fn available_versions<'a>(packages: impl IntoIterator<Item = &'a CatalogPackage>) -> AvailableVersions {
+    let mut versions = AvailableVersions::default();
+    for package in packages {
+        let (name, marketplace) = catalog_identity(package);
+        let Ok(version) = Version::parse(&package.version) else { continue; };
+        let available = match marketplace {
+            Some(marketplace) => versions.marketplaces.entry(name.to_owned()).or_default().entry(marketplace.to_owned()).or_insert_with(|| version.clone()),
+            None => versions.npm.entry(name.to_owned()).or_insert_with(|| version.clone()),
+        };
+        if version > *available { *available = version; }
+    }
+    versions
+}
+
+fn published_version<'a>(package: &CatalogPackage, versions: &'a AvailableVersions) -> Option<&'a Version> {
+    for identifier in [&package.id, &package.name] {
+        let (name, marketplace) = split_marketplace_identifier(identifier);
+        if let Some(marketplace) = marketplace { return versions.marketplaces.get(name)?.get(marketplace); }
+    }
+    for identifier in [&package.id, &package.name] {
+        let (name, _) = split_marketplace_identifier(identifier);
+        if let Some(version) = versions.npm.get(name) { return Some(version); }
+    }
+    if package.author.is_empty() { return None; }
+    let (name, _) = split_marketplace_identifier(&package.name);
+    versions.marketplaces.get(name)?.get(package.author.as_str())
+}
+
 fn marketplaces_from(output: &str) -> Vec<CatalogMarketplace> {
     output.lines().filter_map(|line| {
         if !line.starts_with("  ") || line.starts_with("    ") { return None; }
@@ -195,6 +282,7 @@ fn discovered_from(output: &str, marketplace: &CatalogMarketplace) -> Vec<Catalo
     for line in output.lines() {
         if line.starts_with("  ") && !line.starts_with("    ") {
             let token = line.trim();
+            if token.is_empty() || token.chars().any(char::is_whitespace) { continue; }
             let (name, version) = token.rsplit_once('@').filter(|(base, suffix)| !base.is_empty() && suffix.chars().next().is_some_and(|character| character.is_ascii_digit())).map_or((token, "Not reported"), |(base, suffix)| (base, suffix));
             entries.push((name.to_owned(), version.to_owned(), String::new()));
         } else if line.starts_with("    ") {
@@ -471,17 +559,99 @@ mod tests {
 
 
     #[test]
-    fn derives_updates_from_installed_snapshot() {
+    fn preserves_cli_reported_updates_without_published_metadata() {
         let installed = packages_from(serde_json::json!({ "plugins": [
             { "name": "current", "version": "1.0.0", "updateAvailable": false },
             { "name": "outdated", "version": "1.0.0", "updateAvailable": true },
             { "name": "also-current", "version": "2.0.0" }
         ] }), "installed");
-        let (installed, updates) = installed_views(installed);
+        let (installed, updates) = installed_views(&installed, &[]);
 
         assert_eq!(installed.iter().map(|package| package.name.as_str()).collect::<Vec<_>>(), vec!["current", "outdated", "also-current"]);
         assert_eq!(updates.iter().map(|package| package.name.as_str()).collect::<Vec<_>>(), vec!["outdated"]);
         assert!(updates.iter().all(|package| package.update_available));
+    }
+
+    #[test]
+    fn reports_no_update_for_equal_older_or_non_semver_versions() {
+        let installed = packages_from(serde_json::json!({ "plugins": [
+            { "id": "current@official", "name": "current", "version": "2.0.0" },
+            { "id": "ambiguous@official", "name": "ambiguous", "version": "dev" }
+        ] }), "installed");
+        let marketplace = CatalogMarketplace { name: "official".into(), source: "https://example.test".into() };
+        let published = discovered_from("  current@2.0.0\n  current@1.9.0\n  ambiguous@3.0.0", &marketplace);
+        let (annotated, updates) = installed_views(&installed, &published);
+
+        assert!(updates.is_empty());
+        assert!(annotated.iter().all(|package| !package.update_available));
+    }
+
+    #[test]
+    fn detects_newer_discovered_version_without_cli_update_field() {
+        let installed = packages_from(serde_json::json!({ "plugins": [
+            { "id": "studio-tool@official", "name": "studio-tool", "version": "1.2.3" }
+        ] }), "installed");
+        let marketplace = CatalogMarketplace { name: "official".into(), source: "https://example.test".into() };
+        let published = discovered_from("Available Plugins (official):\n\n  studio-tool@1.3.0", &marketplace);
+        let (annotated, updates) = installed_views(&installed, &published);
+
+        assert!(annotated[0].update_available);
+        assert_eq!(updates.iter().map(|package| package.id.as_str()).collect::<Vec<_>>(), vec!["studio-tool@official"]);
+    }
+
+    #[test]
+    fn detects_newer_pi_catalog_version_without_cli_update_field() {
+        let installed = packages_from(serde_json::json!({ "npm": [
+            { "name": "pi-lens", "version": "3.8.71" }
+        ] }), "installed");
+        let published = pi_packages_from(&serde_json::json!({ "objects": [
+            { "package": { "name": "pi-lens", "version": "3.8.73", "keywords": ["pi-package"] } }
+        ] }));
+        let (annotated, updates) = installed_views(&installed, &published);
+
+        assert!(!installed[0].update_available);
+        assert!(annotated[0].update_available);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].id, "pi-lens");
+        assert_eq!(updates[0].version, "3.8.71");
+    }
+
+    #[test]
+    fn tolerates_partially_malformed_discovery_output() {
+        let marketplace = CatalogMarketplace { name: "official".into(), source: "https://example.test".into() };
+        let packages = discovered_from("Available Plugins (official):\n\n  malformed entry\n    orphan description\n  valid@1.2.3\n    Valid package\n  no-version", &marketplace);
+
+        assert_eq!(packages.iter().map(|package| package.name.as_str()).collect::<Vec<_>>(), vec!["valid", "no-version"]);
+        assert_eq!(packages[0].description, "Valid package");
+        assert_eq!(packages[1].version, "Not reported");
+    }
+
+    #[test]
+    fn preserves_scoped_names_and_splits_marketplace_suffixes() {
+        assert_eq!(split_marketplace_identifier("@scope/package"), ("@scope/package", None));
+        assert_eq!(split_marketplace_identifier("@scope/package@official"), ("@scope/package", Some("official")));
+        assert_eq!(split_marketplace_identifier("studio-tool@official"), ("studio-tool", Some("official")));
+        let marketplace = CatalogMarketplace { name: "official".into(), source: "https://example.test".into() };
+        let packages = discovered_from("  @scope/package@2.0.0", &marketplace);
+        assert_eq!(packages[0].id, "@scope/package@official");
+        assert_eq!(packages[0].name, "@scope/package");
+    }
+
+    #[test]
+    fn reconciliation_keeps_snapshot_immutable_and_annotates_copies() {
+        let snapshot = packages_from(serde_json::json!({ "plugins": [
+            { "id": "studio-tool@official", "name": "studio-tool", "version": "1.0.0" },
+            { "id": "studio-tool@other", "name": "studio-tool", "version": "1.0.0" }
+        ] }), "installed");
+        let marketplace = CatalogMarketplace { name: "official".into(), source: "https://example.test".into() };
+        let published = discovered_from("  studio-tool@1.1.0", &marketplace);
+        let (annotated, updates) = installed_views(&snapshot, &published);
+
+        assert!(snapshot.iter().all(|package| !package.update_available));
+        assert!(annotated[0].update_available);
+        assert!(!annotated[1].update_available);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].id, "studio-tool@official");
     }
 
     #[test]

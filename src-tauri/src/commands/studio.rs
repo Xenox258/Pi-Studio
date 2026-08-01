@@ -582,12 +582,18 @@ fn validate_provider_id(provider_id: &str) -> Result<&str, String> {
     Ok(provider_id)
 }
 
+fn package_command_action<'a>(package_id: &str, requested: &'a str) -> &'a str {
+    let marketplace_qualified = package_id.rfind('@').is_some_and(|index| index > 0 && index + 1 < package_id.len());
+    if requested == "upgrade" && !marketplace_qualified { "install" } else { requested }
+}
+
 #[tauri::command]
 pub async fn manage_package(package_id: String, action: String, scope: String, project_path: Option<String>, state: State<'_, AppState>) -> Result<(), String> {
     if package_id.is_empty() || !package_id.chars().all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_' | '.' | '/' | '@')) { return Err("Invalid package id".into()); }
     if !matches!(action.as_str(), "install" | "uninstall" | "upgrade" | "enable" | "disable") { return Err("Invalid package action".into()); }
     if !matches!(scope.as_str(), "user" | "project") { return Err("Invalid package scope".into()); }
-    let mut command = Command::new("omp"); command.args(["plugin", &action, &package_id, "--scope", &scope]);
+    let omp_action = package_command_action(&package_id, &action);
+    let mut command = Command::new("omp"); command.args(["plugin", omp_action, &package_id, "--scope", &scope]);
     if let Some(path) = augmented_path() { command.env("PATH", path); }
     if scope == "project" { let path = project_path.ok_or_else(|| "Project scope requires a project path".to_string())?; let canonical = Path::new(&path).canonicalize().map_err(|error| error.to_string())?; command.current_dir(canonical); }
     let output = command.output().await.map_err(|error| error.to_string())?;
@@ -635,7 +641,7 @@ fn default_roles() -> Vec<RoleMapping> { vec![RoleMapping { id: "default".into()
 
 #[cfg(test)]
 mod tests {
-    use super::{agent_invoked, build_prompt_message, load_attachment, normalize_thinking_level, parse_session_configuration, parse_transcript, storable_title, transcript_title, ImageAttachment};
+    use super::{agent_invoked, build_prompt_message, load_attachment, normalize_thinking_level, package_command_action, parse_session_configuration, parse_transcript, storable_title, transcript_title, ImageAttachment};
 
     #[test]
     fn inlines_images_and_hands_other_files_over_as_paths() {
@@ -773,6 +779,19 @@ mod tests {
         assert_eq!(build_prompt_message("", &images), serde_json::json!([
             { "type": "image", "source": { "type": "base64", "media_type": "image/jpeg", "data": "WFla" } },
         ]));
+    }
+
+    #[test]
+    fn routes_selected_npm_upgrades_through_install() {
+        assert_eq!(package_command_action("pi-lens", "upgrade"), "install");
+        assert_eq!(package_command_action("@scope/pi-package", "upgrade"), "install");
+    }
+
+    #[test]
+    fn preserves_marketplace_and_non_upgrade_actions() {
+        assert_eq!(package_command_action("studio-tool@official", "upgrade"), "upgrade");
+        assert_eq!(package_command_action("@scope/studio-tool@official", "upgrade"), "upgrade");
+        assert_eq!(package_command_action("pi-lens", "uninstall"), "uninstall");
     }
 
     #[test]

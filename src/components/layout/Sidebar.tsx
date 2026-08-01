@@ -32,7 +32,7 @@ import {
 	setActiveSession,
 	startConfiguredSession,
 } from "../../stores/appStore";
-import { catalogModeLoading, catalogNavigationPending, setCatalogNavigationPending, type CatalogMode } from "../../stores/catalogLoadingStore";
+import { catalogModeLoading, catalogNavigationPending, catalogUpdatesState, setCatalogNavigationPending, type CatalogMode } from "../../stores/catalogLoadingStore";
 import type { ProjectSummary, SessionSummary } from "../../types";
 
 type MarketplaceItem = {
@@ -109,6 +109,10 @@ export default function Sidebar() {
 	});
 
 	const active = (href: string) => location.pathname === href;
+	const knownUpdateCount = () => {
+		const state = catalogUpdatesState();
+		return state.kind === "ready" && state.count > 0 ? state.count : undefined;
+	};
 	const displayTitle = (session: SessionSummary) =>
 		activeSession()?.id === session.id ? activeSession()!.title : session.title;
 	const isExpanded = (projectId: string) =>
@@ -483,7 +487,7 @@ export default function Sidebar() {
 								<A
 									href={item.href}
 									class={`nav-item ${active(item.href) ? "is-active" : ""}`}
-									aria-label={item.label}
+									aria-label={item.mode === "updates" && knownUpdateCount() ? `${item.label}, ${knownUpdateCount()} ${knownUpdateCount() === 1 ? "update" : "updates"} available` : item.label}
 									aria-busy={loading()}
 									title={item.label}
 								onClick={(event) => {
@@ -499,6 +503,7 @@ export default function Sidebar() {
 										<Loader2 size={17} class="spin" aria-hidden="true" />
 									</Show>
 									<span>{item.label}</span>
+									<Show when={item.mode === "updates" ? knownUpdateCount() : undefined}>{count => <span class="nav-item__count" aria-hidden="true">{count()}</span>}</Show>
 								</A>
 							);
 						}}

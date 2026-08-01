@@ -1,6 +1,14 @@
 import { createSignal } from "solid-js";
 
 export type CatalogMode = "discover" | "installed" | "updates" | "local";
+export type CatalogUpdatesState =
+	| { kind: "unknown" | "loading" }
+	| { kind: "error"; message: string }
+	| { kind: "ready"; count: number };
+
+const [catalogUpdatesState, setCatalogUpdatesState] =
+	createSignal<CatalogUpdatesState>({ kind: "unknown" });
+export { catalogUpdatesState, setCatalogUpdatesState };
 
 type LoadingCounts = Record<CatalogMode, number>;
 
