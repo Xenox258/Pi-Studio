@@ -69,7 +69,7 @@ export default function TopBar() {
         </div>
       </Popover>
       <span class="topbar-divider" aria-hidden="true" />
-      <IconButton class={`topbar-panel-toggle ${rightPanelOpen() ? 'is-active' : ''}`} label={rightPanelOpen() ? 'Hide workspace details' : 'Show workspace details'} onClick={() => setRightPanelOpen(open => !open)}><PanelRight size={17} /></IconButton>
+      <IconButton class={`topbar-panel-toggle ${rightPanelOpen() ? 'is-active' : ''}`} label={rightPanelOpen() ? 'Hide details panel' : 'Show details panel'} onClick={() => setRightPanelOpen(open => !open)}><PanelRight size={17} /></IconButton>
     </div>
   </header>;
 }

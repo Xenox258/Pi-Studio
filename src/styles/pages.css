@@ -33,6 +33,7 @@
 .apply-role { height: 52px; }
 .summary-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .ecosystem-page { height: 100%; min-height: 0; display: grid; grid-template-columns: minmax(630px, 1fr) minmax(360px, 480px); }
+.ecosystem-page--wide { grid-template-columns: minmax(0, 1fr); }
 .catalog-main { min-width: 0; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
 .catalog-main .page-heading { margin-bottom: 3px; }
 .catalog-toolbar { display: flex; gap: 9px; }
@@ -66,7 +67,7 @@
 .install-status--error { background: rgba(48,17,20,.98); border-color: rgba(239,99,99,.5); color: #ffd7d7; }
 .install-status__close { flex: 0 0 auto; display: grid; place-items: center; width: 22px; height: 22px; border: 0; border-radius: var(--radius-sm); background: transparent; color: inherit; opacity: .75; }
 .install-status__close:hover { opacity: 1; background: rgba(255,255,255,.12); }
-.package-row { min-height: 91px; padding: 10px 12px; display: grid; grid-template-columns: 48px minmax(220px,1fr) 125px 108px; gap: 13px; align-items: center; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--surface-card); text-align: left; }
+.package-row { width: 100%; min-height: 91px; padding: 10px 12px; display: grid; grid-template-columns: 48px minmax(220px,1fr) 125px 108px; gap: 13px; align-items: center; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--surface-card); text-align: left; }
 .package-row:hover, .package-row.is-selected { border-color: var(--accent-line); background: var(--surface-selected); }
 .catalog-icon { width: 46px; height: 46px; display: grid; place-items: center; border-radius: var(--radius-md); background: #5b40c8; color: white; }
 .catalog-icon svg { width: 24px; }
@@ -115,6 +116,10 @@
 .package-list--table .package-row { min-height: 68px; }
 .package-table-head { height: 42px; padding: 0 12px; display: grid; gap: 13px; align-items: center; color: var(--text-secondary); border: 1px solid var(--border-default); border-radius: var(--radius-sm); }
 .package-table-head span:first-child { grid-column: 1 / 3; }
+.error-row { width: 100%; min-height: 56px; padding: 10px 12px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 13px; align-items: center; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--surface-card); text-align: left; }
+.error-row > span { min-width: 0; display: grid; }
+.error-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.error-row__message { color: var(--text-secondary); font-size: 12px; line-height: 1.45; word-break: break-word; }
 .usage-heading { display: flex; justify-content: space-between; align-items: center; }
 .usage-list { display: flex; flex-direction: column; }
 .usage-account { padding: 26px 2px; border-top: 1px solid var(--border-subtle); }

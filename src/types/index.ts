@@ -1,4 +1,4 @@
-export type RouteId = 'workspace' | 'usage' | 'models' | 'discover' | 'installed' | 'updates' | 'local' | 'settings' | 'onboarding';
+export type RouteId = 'workspace' | 'usage' | 'models' | 'discover' | 'installed' | 'updates' | 'settings' | 'onboarding';
 
 export interface OmpCapabilities {
   version: string | null; rpc: boolean; workflowModeControl: boolean; advisorControl: boolean; loginControl: boolean; extensionUi: boolean; subagentEvents: boolean; usageCliJson: boolean; usageRpcRead: boolean; usageRpcReset: boolean; usageEvents: boolean;

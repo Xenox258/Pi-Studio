@@ -1,5 +1,6 @@
-use std::{collections::HashMap, future::Future, time::{Duration, Instant}};
+use std::{collections::{BTreeMap, HashMap}, fs, future::Future, io::{BufRead, BufReader}, path::{Path, PathBuf}, time::{Duration, Instant}};
 
+use chrono::Local;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::{process::Command, sync::{Mutex, RwLock}};
@@ -32,7 +33,8 @@ pub struct CatalogService {
 
 impl CatalogService {
     pub async fn list(&self, mode: &str) -> StudioResult<Vec<CatalogPackage>> {
-        if !matches!(mode, "discover" | "installed" | "updates" | "local") { return Err(StudioError::InvalidInput("invalid catalog mode".into())); }
+        if !matches!(mode, "discover" | "installed" | "updates" | "local" | "errors") { return Err(StudioError::InvalidInput("invalid catalog mode".into())); }
+        if mode == "errors" { return self.errors_view().await; }
         if mode == "installed" || mode == "updates" { return self.installed_view(mode == "updates").await; }
         if mode == "discover" { return self.discover_view_with(|| self.discover()).await; }
         if let Some(value) = self.cached(mode).await { return Ok(value); }
@@ -42,6 +44,17 @@ impl CatalogService {
         let output = omp_output(&arguments).await?;
         let packages = if output.trim().is_empty() { Vec::new() } else { packages_from(serde_json::from_str(&output)?, mode) };
         self.cache.write().await.insert(mode.to_owned(), (Instant::now(), packages.clone()));
+        Ok(packages)
+    }
+
+    /// Combines per-plugin issues from `omp plugin doctor --json` with MCP tool load failures
+    /// recorded in today's structured OMP logs.
+    async fn errors_view(&self) -> StudioResult<Vec<CatalogPackage>> {
+        if let Some(value) = self.cached("errors").await { return Ok(value); }
+        let output = omp_output(&["plugin", "doctor", "--json"]).await?;
+        let mut packages = if output.trim().is_empty() { Vec::new() } else { doctor_issues_from(serde_json::from_str(&output)?) };
+        if let Some(logs_dir) = omp_logs_dir() { packages.extend(mcp_failures_from(&logs_dir)); }
+        self.cache.write().await.insert("errors".into(), (Instant::now(), packages.clone()));
         Ok(packages)
     }
 
@@ -165,6 +178,77 @@ impl CatalogService {
         }
         Ok(packages)
     }
+}
+
+/// Statuses observed in the wild: `ok` and `warning`. Any non-ok status is an issue; a status that
+/// is neither `warning` nor `ok` renders as `Error` rather than being dropped.
+fn doctor_issues_from(value: Value) -> Vec<CatalogPackage> {
+    let Some(entries) = value.as_array() else { return Vec::new(); };
+    entries.iter().filter_map(|entry| {
+        let object = entry.as_object()?;
+        let name = text(object, &["name"])?.strip_prefix("plugin:")?.to_owned();
+        let status = text(object, &["status"])?;
+        if status == "ok" { return None; }
+        let kind = if status == "warning" { "Warning" } else { "Error" }.to_owned();
+        Some(CatalogPackage {
+            id: name.clone(),
+            name,
+            author: String::new(),
+            description: text(object, &["message"]).unwrap_or_default(),
+            kind,
+            version: "—".into(),
+            downloads: None,
+            installed: true,
+            update_available: false,
+            compatibility: status,
+            permissions: Vec::new(),
+            resources: Vec::new(),
+        })
+    }).collect()
+}
+
+fn omp_logs_dir() -> Option<PathBuf> {
+    Some(dirs::home_dir()?.join(".omp").join("logs"))
+}
+
+fn mcp_failures_from(logs_dir: &Path) -> Vec<CatalogPackage> {
+    let today = Local::now().format("%Y-%m-%d").to_string();
+    let Ok(entries) = fs::read_dir(logs_dir) else { return Vec::new(); };
+    let mut logs = entries.filter_map(Result::ok).filter_map(|entry| {
+        let file_type = entry.file_type().ok()?;
+        if !file_type.is_file() { return None; }
+        let name = entry.file_name().to_str()?.to_owned();
+        (name.starts_with("omp.") && name.ends_with(".log") && name.contains(&today))
+            .then(|| (name, entry.path()))
+    }).collect::<Vec<_>>();
+    logs.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let mut failures = BTreeMap::new();
+    for (_, path) in logs {
+        let Ok(file) = fs::File::open(path) else { continue; };
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            let Ok(value) = serde_json::from_str::<Value>(line.trim()) else { continue; };
+            if value.get("message").and_then(Value::as_str) != Some("MCP tool load failed") { continue; }
+            let Some(name) = value.get("path").and_then(Value::as_str).and_then(|path| path.strip_prefix("mcp:")) else { continue; };
+            let Some(error) = value.get("error").and_then(Value::as_str) else { continue; };
+            let name = name.to_owned();
+            failures.insert(name.clone(), CatalogPackage {
+                id: name.clone(),
+                name,
+                author: String::new(),
+                description: error.to_owned(),
+                kind: "Error".into(),
+                version: "—".into(),
+                downloads: None,
+                installed: true,
+                update_available: false,
+                compatibility: "error".into(),
+                permissions: Vec::new(),
+                resources: Vec::new(),
+            });
+        }
+    }
+    failures.into_values().collect()
 }
 
 fn installed_views<'a>(installed: &[CatalogPackage], published: impl IntoIterator<Item = &'a CatalogPackage>) -> (Vec<CatalogPackage>, Vec<CatalogPackage>) {
@@ -677,5 +761,57 @@ mod tests {
         assert_eq!(pi_kind(&["pi-theme-dark".into()]), "Theme");
         assert_eq!(pi_kind(&["pi-prompt-library".into()]), "Prompt");
         assert_eq!(pi_kind(&["skillful".into(), "prompting".into()]), "Package");
+    }
+
+    #[test]
+    fn parses_doctor_issues_into_packages() {
+        let value = serde_json::json!([
+            { "name": "plugins_directory", "status": "ok", "message": "Found at /home/.omp/plugins" },
+            { "name": "plugin:healthy", "status": "ok", "message": "v1.0.0 - Works" },
+            { "name": "plugin:broken", "status": "error", "message": "v1.0.0 - Failed to load ./dist/index.js" },
+            { "name": "plugin:quirky", "status": "warning", "message": "v1.0.0 - No omp/pi manifest (not an omp plugin)" },
+        ]);
+        let issues = doctor_issues_from(value);
+        assert_eq!(issues.len(), 2);
+        assert_eq!(issues[0].name, "broken");
+        assert_eq!(issues[0].kind, "Error");
+        assert_eq!(issues[0].compatibility, "error");
+        assert!(issues[0].description.contains("Failed to load"));
+        assert_eq!(issues[1].name, "quirky");
+        assert_eq!(issues[1].kind, "Warning");
+        assert_eq!(issues[1].compatibility, "warning");
+    }
+
+
+    #[test]
+    fn surfaces_mcp_load_failures_from_logs() {
+        let logs_dir = std::env::temp_dir().join(format!("omp-mcp-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&logs_dir);
+        fs::create_dir_all(&logs_dir).unwrap();
+        let today = Local::now().format("%Y-%m-%d");
+        let log = logs_dir.join(format!("omp.{today}.123.log"));
+        fs::write(log, concat!(
+            r#"{"timestamp":"2026-08-04T17:50:27.857+02:00","level":"error","pid":3151,"message":"MCP tool load failed","path":"mcp:bigpowers-mcp","error":"ENOENT: no such file or directory, posix_spawn 'node'"}"#, "\n",
+            r#"{"timestamp":"2026-08-04T17:50:28.000+02:00","level":"debug","message":"MCP prompt commands refreshed","path":"mcp:ignored"}"#, "\n",
+            r#"{"timestamp":"2026-08-04T17:50:29.000+02:00","level":"error","message":"MCP tool load failed","path":"mcp:lean-ctx","error":"timeout"}"#, "\n",
+        )).unwrap();
+
+        let failures = mcp_failures_from(&logs_dir);
+
+        assert_eq!(failures.len(), 2);
+        assert_eq!(failures[0].name, "bigpowers-mcp");
+        assert_eq!(failures[0].kind, "Error");
+        assert_eq!(failures[0].compatibility, "error");
+        assert!(failures[0].description.contains("ENOENT"));
+        assert_eq!(failures[1].name, "lean-ctx");
+        fs::remove_dir_all(logs_dir).unwrap();
+    }
+
+    #[test]
+    fn ignores_missing_logs_dir() {
+        let logs_dir = std::env::temp_dir().join(format!("omp-mcp-missing-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&logs_dir);
+
+        assert!(mcp_failures_from(&logs_dir).is_empty());
     }
 }

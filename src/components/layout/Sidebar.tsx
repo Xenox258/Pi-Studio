@@ -10,7 +10,6 @@ import {
 	Loader2,
 	MessageSquare,
 	PackageCheck,
-	PackageOpen,
 	Pencil,
 	Plus,
 	Search,
@@ -32,7 +31,7 @@ import {
 	setActiveSession,
 	startConfiguredSession,
 } from "../../stores/appStore";
-import { catalogModeLoading, catalogNavigationPending, catalogUpdatesState, setCatalogNavigationPending, type CatalogMode } from "../../stores/catalogLoadingStore";
+import { catalogErrorsState, catalogModeLoading, catalogNavigationPending, catalogUpdatesState, setCatalogNavigationPending, type CatalogMode } from "../../stores/catalogLoadingStore";
 import type { ProjectSummary, SessionSummary } from "../../types";
 
 type MarketplaceItem = {
@@ -46,8 +45,7 @@ const marketplace: readonly MarketplaceItem[] = [
 	{ href: "/discover", label: "Discover", icon: Search, mode: "discover" },
 	{ href: "/installed", label: "Installed", icon: Box, mode: "installed" },
 	{ href: "/updates", label: "Updates", icon: PackageCheck, mode: "updates" },
-	{ href: "/local", label: "Local resources", icon: PackageOpen, mode: "local" },
-	{ href: "/usage", label: "Usage & limits", icon: Gauge },
+	{ href: "/errors", label: "Errors", icon: AlertCircle, mode: "errors" },
 ];
 
 const PROJECT_LIMIT = 4;
@@ -112,6 +110,16 @@ export default function Sidebar() {
 	const knownUpdateCount = () => {
 		const state = catalogUpdatesState();
 		return state.kind === "ready" && state.count > 0 ? state.count : undefined;
+	};
+	const knownErrorCount = () => {
+		const state = catalogErrorsState();
+		return state.kind === "ready" && state.count > 0 ? state.count : undefined;
+	};
+	const knownErrorTone = () => {
+		const state = catalogErrorsState();
+		return state.kind === "ready" && state.count > 0
+			? state.severity
+			: undefined;
 	};
 	const displayTitle = (session: SessionSummary) =>
 		activeSession()?.id === session.id ? activeSession()!.title : session.title;
@@ -487,7 +495,7 @@ export default function Sidebar() {
 								<A
 									href={item.href}
 									class={`nav-item ${active(item.href) ? "is-active" : ""}`}
-									aria-label={item.mode === "updates" && knownUpdateCount() ? `${item.label}, ${knownUpdateCount()} ${knownUpdateCount() === 1 ? "update" : "updates"} available` : item.label}
+									aria-label={item.mode === "errors" && knownErrorCount() ? `${item.label}, ${knownErrorCount()} ${knownErrorCount() === 1 ? "issue" : "issues"} reported` : item.mode === "updates" && knownUpdateCount() ? `${item.label}, ${knownUpdateCount()} ${knownUpdateCount() === 1 ? "update" : "updates"} available` : item.label}
 									aria-busy={loading()}
 									title={item.label}
 								onClick={(event) => {
@@ -503,7 +511,7 @@ export default function Sidebar() {
 										<Loader2 size={17} class="spin" aria-hidden="true" />
 									</Show>
 									<span>{item.label}</span>
-									<Show when={item.mode === "updates" ? knownUpdateCount() : undefined}>{count => <span class="nav-item__count" aria-hidden="true">{count()}</span>}</Show>
+									<Show when={item.mode === "errors" ? knownErrorCount() : item.mode === "updates" ? knownUpdateCount() : undefined}>{count => <span class={`nav-item__count${item.mode === "errors" ? ` nav-item__count--${knownErrorTone() ?? "warning"}` : ""}`} aria-hidden="true">{count()}</span>}</Show>
 								</A>
 							);
 						}}
@@ -517,6 +525,15 @@ export default function Sidebar() {
 					>
 						<Sparkles size={17} />
 						<span>{activeModelLabel()}</span>
+					</A>
+					<A
+						href="/usage"
+						class={`nav-item ${active("/usage") ? "is-active" : ""}`}
+						aria-label="Usage & limits"
+						title="Usage & limits"
+					>
+						<Gauge size={17} />
+						<span>Usage & limits</span>
 					</A>
 					<A
 						href="/providers"

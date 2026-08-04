@@ -175,6 +175,12 @@
 	font-variant-numeric: tabular-nums;
 	text-align: center;
 }
+.nav-item .nav-item__count--warning {
+	background: var(--warning);
+}
+.nav-item .nav-item__count--error {
+	background: var(--danger);
+}
 .new-session-action {
 	color: var(--text-primary);
 }

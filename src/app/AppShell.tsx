@@ -5,7 +5,7 @@ import TopBar from '../components/layout/TopBar';
 import { setRightPanelOpen } from '../stores/appStore';
 import { catalogNavigationMode, type CatalogMode } from '../stores/catalogLoadingStore';
 
-const catalogModeLabels: Record<CatalogMode, string> = { discover: 'Discover', installed: 'Installed', updates: 'Updates', local: 'Local resources' };
+const catalogModeLabels: Record<CatalogMode, string> = { discover: 'Discover', installed: 'Installed', updates: 'Updates', errors: 'Plugin errors' };
 
 export default function AppShell(props: { children?: JSX.Element }) {
   onMount(() => {

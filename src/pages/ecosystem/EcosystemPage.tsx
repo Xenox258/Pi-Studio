@@ -1,12 +1,12 @@
 import { For, Show, createEffect, createMemo, createResource, createSignal } from 'solid-js';
 import { useNavigate } from '@solidjs/router';
-import { AlertCircle, Box, Check, Download, Folder, Loader, Loader2, Search, ShieldCheck, Sparkles, X, Zap } from 'lucide-solid';
+import { AlertCircle, Box, Check, Download, Loader, Loader2, Search, ShieldCheck, Sparkles, X, Zap } from 'lucide-solid';
 import type { PackageInfo } from '../../types';
 import { Badge, Button, Panel, Tabs, VirtualList } from '../../components/ui';
 import Markdown from '../../components/ui/Markdown';
 import { studioApi } from '../../api/invoke';
-import { activeProject } from '../../stores/appStore';
-import { beginCatalogLoading, catalogModeLoading, catalogUpdatesState, setCatalogNavigationPending, setCatalogUpdatesState, type CatalogMode } from '../../stores/catalogLoadingStore';
+import { activeProject, rightPanelOpen } from '../../stores/appStore';
+import { beginCatalogLoading, catalogErrorSeverity, catalogErrorsState, catalogModeLoading, catalogUpdatesState, setCatalogErrorsState, setCatalogNavigationPending, setCatalogUpdatesState, type CatalogMode } from '../../stores/catalogLoadingStore';
 
 type Mode = CatalogMode;
 type Action = 'install' | 'uninstall' | 'upgrade';
@@ -15,8 +15,8 @@ const kinds = ['All', 'Extensions', 'Skills', 'Prompts', 'Themes', 'Packages'];
 const actionVerb: Record<Action, string> = { install: 'Installing', uninstall: 'Removing', upgrade: 'Updating' };
 const actionDone: Record<Action, string> = { install: 'installed', uninstall: 'removed', upgrade: 'updated' };
 
-const catalogModes: readonly Mode[] = ['discover', 'installed', 'updates', 'local'];
-const catalogModeLabels: Record<Mode, string> = { discover: 'Discover', installed: 'Installed', updates: 'Updates', local: 'Local resources' };
+const catalogModes: readonly Mode[] = ['discover', 'installed', 'updates', 'errors'];
+const catalogModeLabels: Record<Mode, string> = { discover: 'Discover', installed: 'Installed', updates: 'Updates', errors: 'Plugin errors' };
 const emptyCatalog: PackageInfo[] = [];
 const catalogCache = new Map<Mode, PackageInfo[]>();
 const catalogInFlight = new Map<Mode, Promise<PackageInfo[]>>();
@@ -26,6 +26,7 @@ function loadCatalog(mode: Mode): PackageInfo[] | Promise<PackageInfo[]> {
   const cached = catalogCache.get(mode);
   if (cached) {
     if (mode === 'updates') setCatalogUpdatesState({ kind: 'ready', count: cached.length });
+    if (mode === 'errors') setCatalogErrorsState({ kind: 'ready', count: cached.length, severity: catalogErrorSeverity(cached) });
     setCatalogNavigationPending(mode, false);
     return cached;
   }
@@ -35,24 +36,31 @@ function loadCatalog(mode: Mode): PackageInfo[] | Promise<PackageInfo[]> {
 
   if (!('__TAURI_INTERNALS__' in window)) {
     if (mode === 'updates') setCatalogUpdatesState({ kind: 'unknown' });
+    if (mode === 'errors') setCatalogErrorsState({ kind: 'unknown' });
     setCatalogNavigationPending(mode, false);
     return emptyCatalog;
   }
 
   const generation = catalogGeneration;
   if (mode === 'updates') setCatalogUpdatesState({ kind: 'loading' });
+  if (mode === 'errors') setCatalogErrorsState({ kind: 'loading' });
   const request = (async () => {
     try {
       const packages = await studioApi.catalog(mode);
       if (generation === catalogGeneration) {
         catalogCache.set(mode, packages);
         if (mode === 'updates') setCatalogUpdatesState({ kind: 'ready', count: packages.length });
+        if (mode === 'errors') setCatalogErrorsState({ kind: 'ready', count: packages.length, severity: catalogErrorSeverity(packages) });
       }
       return packages;
     } catch (error) {
       if (generation === catalogGeneration && mode === 'updates') {
         const message = error instanceof Error ? error.message : typeof error === 'string' ? error : 'OMP could not check configured marketplaces.';
         setCatalogUpdatesState({ kind: 'error', message });
+      }
+      if (generation === catalogGeneration && mode === 'errors') {
+        const message = error instanceof Error ? error.message : typeof error === 'string' ? error : 'OMP could not check configured marketplaces.';
+        setCatalogErrorsState({ kind: 'error', message });
       }
       throw error;
     }
@@ -81,6 +89,7 @@ function invalidateCatalogCache(): void {
   catalogCache.clear();
   catalogInFlight.clear();
   setCatalogUpdatesState({ kind: 'unknown' });
+  setCatalogErrorsState({ kind: 'unknown' });
 }
 
 // npm READMEs are raw markdown that often open with HTML badge/logo blocks. Our Markdown renderer shows
@@ -130,9 +139,9 @@ export default function EcosystemPage(props: { mode: Mode }) {
   const visible = createMemo(() => (catalog() ?? []).filter(item => matchesKind(item, kind()) && `${item.name} ${item.description} ${item.author}`.toLowerCase().includes(query().toLowerCase())));
   // Discover renders a virtualized two-column grid: each virtual row holds a pair of package cards.
   const rows = createMemo(() => { const list = visible(); const paired: PackageInfo[][] = []; for (let index = 0; index < list.length; index += 2) paired.push(list.slice(index, index + 2)); return paired; });
-  const installedMode = () => props.mode !== 'discover';
+  const installedMode = () => props.mode !== 'discover' && props.mode !== 'errors';
   const catalogLoading = () => catalogModeLoading(props.mode) || catalog.loading;
-  const modes = () => [{ id: 'discover', label: 'Discover' }, { id: 'installed', label: 'Installed' }, { id: 'updates', label: 'Updates', count: knownUpdatesCount() }, { id: 'local', label: 'Local resources' }];
+  const modes = () => [{ id: 'discover', label: 'Discover' }, { id: 'installed', label: 'Installed' }, { id: 'updates', label: 'Updates', count: knownUpdatesCount() }, { id: 'errors', label: 'Errors', count: knownErrorsCount() }];
   const updatesSummary = () => {
     const state = catalogUpdatesState();
     if (state.kind === 'loading') return 'Checking for package updates…';
@@ -141,6 +150,14 @@ export default function EcosystemPage(props: { mode: Mode }) {
     return 'Package update status is available in the installed OMP Studio app.';
   };
   const knownUpdatesCount = () => { const state = catalogUpdatesState(); return state.kind === 'ready' ? state.count : undefined; };
+  const knownErrorsCount = () => { const state = catalogErrorsState(); return state.kind === 'ready' ? state.count : undefined; };
+  const errorsSummary = () => {
+    const state = catalogErrorsState();
+    if (state.kind === 'loading') return 'Checking plugin issues…';
+    if (state.kind === 'error') return `Plugin check failed: ${state.message}`;
+    if (state.kind === 'ready') return state.count === 0 ? 'No plugin issues reported' : `${state.count} ${state.count === 1 ? 'issue' : 'issues'} reported`;
+    return 'Plugin issue status is available in the installed OMP Studio app.';
+  };
   // One status line pinned to the bottom: green while working, green check on success, red on failure.
   function report(kind: Status['kind'], text: string) { clearTimeout(statusTimer); setStatus({ kind, text }); if (kind === 'success') statusTimer = window.setTimeout(() => setStatus(null), 5_000); }
   async function manage(item: PackageInfo, action: Action) {
@@ -158,5 +175,5 @@ export default function EcosystemPage(props: { mode: Mode }) {
     }
   }
   async function addMarketplace() { const source = marketplaceSource().trim(); if (!source) return; try { report('progress', 'Adding marketplace…'); await studioApi.addMarketplace(source); setMarketplaceSource(''); invalidateCatalogCache(); await refetchMarketplaces(); await refetch(); report('success', 'Marketplace added'); } catch (error) { report('error', error instanceof Error ? error.message : 'Unable to add marketplace'); } }
-  return <div class={`ecosystem-page ${installedMode() ? 'ecosystem-page--installed' : ''}`}><section class="catalog-main page"><header class="page-heading"><h1>{props.mode === 'discover' ? 'Pi Catalog' : props.mode === 'updates' ? 'Package updates' : props.mode === 'local' ? 'Local resources' : 'Installed resources'}</h1><p>{installedMode() ? 'Manage resources reported by your OMP installation.' : 'Discover packages published for the Pi ecosystem.'}</p><Show when={props.mode === 'updates'}><p class={`catalog-update-summary catalog-update-summary--${catalogUpdatesState().kind}`} role={catalogUpdatesState().kind === 'error' ? 'alert' : 'status'} aria-live="polite">{updatesSummary()}</p></Show></header><Show when={installedMode()}><div class="stat-grid"><Panel><Box /><strong>{props.mode === 'updates' ? knownUpdatesCount() ?? '—' : catalog()?.length ?? 0}</strong><span>{props.mode === 'updates' ? 'Updates' : 'Resources'}</span><small>Reported by OMP</small></Panel><Panel><Folder /><strong>{props.mode === 'local' ? catalog()?.length ?? 0 : '—'}</strong><span>Local resources</span><small>{props.mode === 'local' ? 'From local plugin storage' : 'Open Local resources to inspect'}</small></Panel><Panel><ShieldCheck /><strong>{catalog()?.filter(item => item.compatibility !== 'Not reported').length ?? 0}</strong><span>Compatibility reports</span><small>Declared by package metadata</small></Panel></div></Show><Tabs items={modes()} value={props.mode} onChange={id => navigate(`/${id}`)} /><div class="catalog-toolbar"><label class="search-box"><Search size={17} /><input placeholder="Search packages…" value={query()} onInput={event => setQuery(event.currentTarget.value)} /></label><Show when={props.mode === 'discover'}><input class="marketplace-source" aria-label="Marketplace source" placeholder="Repository or local marketplace path" value={marketplaceSource()} onInput={event => setMarketplaceSource(event.currentTarget.value)} /><Button variant="solid" tone="accent" disabled={!marketplaceSource().trim()} onClick={() => void addMarketplace()}>Add marketplace</Button></Show></div><Show when={props.mode === 'discover' && marketplaces()?.length}><p class="marketplace-note">Also searching {marketplaces()?.map(marketplace => marketplace.name).join(', ')}</p></Show><Tabs items={kinds.map(label => ({ id: label, label }))} value={kind()} onChange={setKind} /><div class={`package-list ${installedMode() ? 'package-list--table' : ''}`} aria-busy={catalogModeLoading(props.mode)}><Show when={installedMode()}><div class="package-table-head"><span>Name</span><span>Type</span><span>Version</span><span>Scope</span><span>Status</span></div></Show><Show when={!catalogLoading()} fallback={<div class="catalog-loading" role="status" aria-live="polite"><Loader2 size={20} class="spin" aria-hidden="true" /><span>{`Loading ${catalogModeLabels[props.mode]} catalog…`}</span></div>}><Show when={installedMode()} fallback={<VirtualList items={rows()} estimateSize={180} class="catalog-results catalog-results--grid">{pair => <div class="discover-grid"><For each={pair}>{item => <DiscoverCard item={item} selected={selected()?.id === item.id} busy={busy()} onSelect={() => setSelected(item)} onInstall={() => void manage(item, 'install')} />}</For></div>}</VirtualList>}><VirtualList items={visible()} estimateSize={99} class="catalog-results">{item => <button class={`package-row ${selected()?.id === item.id ? 'is-selected' : ''}`} onClick={() => setSelected(item)}><PackageGlyph item={item} /><span class="package-copy"><strong>{item.name}</strong><small>{item.description || 'No description reported'}</small><em>{item.author || 'Unknown author'}</em></span><Badge tone="accent">{item.kind}</Badge><span>v{item.version}</span><span>OMP</span><span class={item.updateAvailable ? 'warning' : 'success'}>● {item.updateAvailable ? 'Update available' : 'Installed'}</span></button>}</VirtualList></Show><Show when={!visible().length && !(props.mode === 'updates' && catalogUpdatesState().kind !== 'ready')}><Panel>{props.mode === 'discover' && !marketplaces()?.length ? 'No packages matched. Try a different search or type filter.' : 'No packages reported by OMP for this view.'}</Panel></Show></Show></div><footer class="pagination"><span>Showing {visible().length} resources</span></footer></section><Show when={selected()}>{item => <PackageDetail item={item()} scope={scope()} busy={busy()} readme={readme() ?? ''} readmeLoading={props.mode === 'discover' && readme.loading} onScope={setScope} onAction={action => void manage(item(), action)} />}</Show><Show when={status()}>{state => <div class={`install-status install-status--${state().kind}`} role="status">{state().kind === 'progress' ? <Loader size={15} class="spin" /> : state().kind === 'success' ? <Check size={15} /> : <AlertCircle size={15} />}<span>{state().text}</span><button class="install-status__close" type="button" aria-label="Dismiss" onClick={() => setStatus(null)}><X size={15} /></button></div>}</Show></div>;
+  return <div class={`ecosystem-page ${installedMode() ? 'ecosystem-page--installed' : ''} ${props.mode === 'errors' || !rightPanelOpen() ? 'ecosystem-page--wide' : ''}`}><section class="catalog-main page"><header class="page-heading"><h1>{props.mode === 'discover' ? 'Pi Catalog' : props.mode === 'errors' ? 'Plugin errors' : props.mode === 'updates' ? 'Package updates' : 'Installed resources'}</h1><p>{props.mode === 'errors' ? 'Issues reported by omp.' : installedMode() ? 'Manage resources reported by your OMP installation.' : 'Discover packages published for the Pi ecosystem.'}</p><Show when={props.mode === 'updates'}><p class={`catalog-update-summary catalog-update-summary--${catalogUpdatesState().kind}`} role={catalogUpdatesState().kind === 'error' ? 'alert' : 'status'} aria-live="polite">{updatesSummary()}</p></Show><Show when={props.mode === 'errors'}><p class={`catalog-update-summary catalog-update-summary--${catalogErrorsState().kind}`} role={catalogErrorsState().kind === 'error' ? 'alert' : 'status'} aria-live="polite">{errorsSummary()}</p></Show></header><Show when={installedMode()}><div class="stat-grid"><Panel><Box /><strong>{props.mode === 'updates' ? knownUpdatesCount() ?? '—' : catalog()?.length ?? 0}</strong><span>{props.mode === 'updates' ? 'Updates' : 'Resources'}</span><small>Reported by OMP</small></Panel> <Panel><ShieldCheck /><strong>{catalog()?.filter(item => item.compatibility !== 'Not reported').length ?? 0}</strong><span>Compatibility reports</span><small>Declared by package metadata</small></Panel></div></Show><Tabs items={modes()} value={props.mode} onChange={id => navigate(`/${id}`)} /><div class="catalog-toolbar"><label class="search-box"><Search size={17} /><input placeholder="Search packages…" value={query()} onInput={event => setQuery(event.currentTarget.value)} /></label><Show when={props.mode === 'discover'}><input class="marketplace-source" aria-label="Marketplace source" placeholder="Repository or local marketplace path" value={marketplaceSource()} onInput={event => setMarketplaceSource(event.currentTarget.value)} /><Button variant="solid" tone="accent" disabled={!marketplaceSource().trim()} onClick={() => void addMarketplace()}>Add marketplace</Button></Show></div><Show when={props.mode === 'discover' && marketplaces()?.length}><p class="marketplace-note">Also searching {marketplaces()?.map(marketplace => marketplace.name).join(', ')}</p></Show><Show when={props.mode !== 'errors'}><Tabs items={kinds.map(label => ({ id: label, label }))} value={kind()} onChange={setKind} /></Show><div class={`package-list ${installedMode() ? 'package-list--table' : ''}`} aria-busy={catalogModeLoading(props.mode)}><Show when={installedMode()}><div class="package-table-head"><span>Name</span><span>Type</span><span>Version</span><span>Scope</span><span>Status</span></div></Show><Show when={!catalogLoading()} fallback={<div class="catalog-loading" role="status" aria-live="polite"><Loader2 size={20} class="spin" aria-hidden="true" /><span>{`Loading ${catalogModeLabels[props.mode]} catalog…`}</span></div>}><Show when={installedMode()} fallback={<Show when={props.mode === 'errors'} fallback={<VirtualList items={rows()} estimateSize={180} class="catalog-results catalog-results--grid">{pair => <div class="discover-grid"><For each={pair}>{item => <DiscoverCard item={item} selected={selected()?.id === item.id} busy={busy()} onSelect={() => setSelected(item)} onInstall={() => void manage(item, 'install')} />}</For></div>}</VirtualList>}><VirtualList items={visible()} estimateSize={56} class="catalog-results">{item => <div class="error-row"><span><strong>{item.name}</strong><em class="error-row__message">{item.description || 'No issue details reported'}</em></span><Badge tone={item.kind === 'Error' ? 'danger' : 'warning'}>{item.kind}</Badge></div>}</VirtualList></Show>}><VirtualList items={visible()} estimateSize={99} class="catalog-results">{item => <button class={`package-row ${selected()?.id === item.id ? 'is-selected' : ''}`} onClick={() => setSelected(item)}><PackageGlyph item={item} /><span class="package-copy"><strong>{item.name}</strong><small>{item.description || 'No description reported'}</small><em>{item.author || 'Unknown author'}</em></span><Badge tone="accent">{item.kind}</Badge><span>v{item.version}</span><span>OMP</span><span class={item.updateAvailable ? 'warning' : 'success'}>● {item.updateAvailable ? 'Update available' : 'Installed'}</span></button>}</VirtualList></Show><Show when={!visible().length && !(props.mode === 'updates' && catalogUpdatesState().kind !== 'ready') && !(props.mode === 'errors' && catalogErrorsState().kind !== 'ready')}><Panel>{props.mode === 'errors' ? 'No plugin issues reported by OMP.' : props.mode === 'discover' && !marketplaces()?.length ? 'No packages matched. Try a different search or type filter.' : 'No packages reported by OMP for this view.'}</Panel></Show></Show></div><footer class="pagination"><span>Showing {visible().length} resources</span></footer></section><Show when={props.mode !== 'errors' && selected() && rightPanelOpen() ? selected() : undefined}>{item => <PackageDetail item={item()} scope={scope()} busy={busy()} readme={readme() ?? ''} readmeLoading={props.mode === 'discover' && readme.loading} onScope={setScope} onAction={action => void manage(item(), action)} />}</Show><Show when={status()}>{state => <div class={`install-status install-status--${state().kind}`} role="status">{state().kind === 'progress' ? <Loader size={15} class="spin" /> : state().kind === 'success' ? <Check size={15} /> : <AlertCircle size={15} />}<span>{state().text}</span><button class="install-status__close" type="button" aria-label="Dismiss" onClick={() => setStatus(null)}><X size={15} /></button></div>}</Show></div>;
 }

@@ -89,7 +89,7 @@ requireContract(ecosystemSource.includes("mode === 'updates') setCatalogUpdatesS
 requireContract(ecosystemSource.includes('catalogGeneration') && ecosystemSource.includes('generation === catalogGeneration'), 'stale catalog results cannot overwrite update state');
 requireContract(ecosystemSource.includes('Update available') && occurrences(ecosystemSource, 'props.item.updateAvailable') >= 3 && ecosystemSource.includes("type Action = 'install' | 'uninstall' | 'upgrade'") && ecosystemSource.includes("manage(item, 'install')") && ecosystemSource.includes("onAction('upgrade')"), 'Discover, detail, and installed rows expose updateAvailable without changing package actions');
 requireContract(ecosystemSource.includes('Checking for package updates…') && ecosystemSource.includes('No updates available') && ecosystemSource.includes('Update check failed:') && ecosystemSource.includes("knownUpdatesCount() ?? '—'"), 'Updates route never invents zero while status is unknown, loading, or failed');
-requireContract(sidebarSource.includes('knownUpdateCount') && sidebarSource.includes('state.count > 0') && sidebarSource.includes('nav-item__count') && sidebarSource.includes('aria-label={item.mode === "updates"'), 'Sidebar shows only a known positive update count and includes it in the accessible label');
+requireContract(sidebarSource.includes('knownUpdateCount') && sidebarSource.includes('knownErrorCount') && sidebarSource.includes('state.count > 0') && sidebarSource.includes('nav-item__count') && sidebarSource.includes('item.mode === "errors" && knownErrorCount()') && sidebarSource.includes('item.mode === "updates" && knownUpdateCount()'), 'Sidebar shows only known positive update and error counts and includes them in accessible labels');
 
 try {
   server = spawn('npm', ['run', 'preview', '--', '--host', host, '--port', port, '--strictPort'], { detached: true, stdio: 'ignore' });
@@ -101,7 +101,7 @@ try {
     ['/discover', 'Pi Catalog'],
     ['/installed', 'Installed resources'],
     ['/updates', 'Package updates'],
-    ['/local', 'Local resources'],
+    ['/errors', 'Plugin errors'],
     ['/settings', 'Performance, OMP runtime, storage, and diagnostics.'],
     ['/onboarding', 'Welcome to OMP Studio'],
     ['/providers', 'Welcome to OMP Studio'],

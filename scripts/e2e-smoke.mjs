@@ -109,7 +109,7 @@ try {
 	await send("Page.addScriptToEvaluateOnNewDocument", {
 		source: `
     window.__calls = []; window.__sessionStarted = false; window.__newSessionTitle = 'New session';
-    window.__catalogCalls = { discover: 0, installed: 0, updates: 0, local: 0 }; window.__holdDiscover = false; window.__releaseDiscover = undefined; window.__holdUpdates = false; window.__releaseUpdates = undefined; window.__catalogUpdatesResponse = 'one'; window.__rejectUpdates = false;
+    window.__catalogCalls = { discover: 0, installed: 0, updates: 0, errors: 0 }; window.__holdDiscover = false; window.__releaseDiscover = undefined; window.__holdUpdates = false; window.__releaseUpdates = undefined; window.__catalogUpdatesResponse = 'one'; window.__rejectUpdates = false; window.__errorsWarningOnly = sessionStorage.getItem('errorsWarningOnly') === '1';
     window.__listeners = {};
     const readConnected = () => JSON.parse(sessionStorage.getItem('connected') || '[]');
     const writeConnected = list => sessionStorage.setItem('connected', JSON.stringify(list));
@@ -150,8 +150,11 @@ try {
           if (mode === 'updates' && window.__holdUpdates && window.__catalogCalls.updates === 1) await new Promise(resolve => { window.__releaseUpdates = resolve; });
           if (mode === 'updates' && window.__rejectUpdates) throw 'catalog update check failed: marketplace unavailable';
           const update = { id: 'studio-tool@studio-smoke', name: 'studio-tool', author: 'studio-smoke', description: 'Reported by OMP', kind: 'Package', version: '1.2.3', installed: true, updateAvailable: true, compatibility: 'OMP marketplace', permissions: [], resources: [] };
+          const broken = { id: 'broken-plugin', name: 'broken-plugin', author: '', description: 'Failed to load ./dist/index.js', kind: 'Error', version: '—', installed: true, updateAvailable: false, compatibility: 'error', permissions: [], resources: [] };
+          const quirky = { id: 'quirky-plugin', name: 'quirky-plugin', author: '', description: 'No omp/pi manifest (not an omp plugin)', kind: 'Warning', version: '—', installed: true, updateAvailable: false, compatibility: 'warning', permissions: [], resources: [] };
           if (mode === 'updates') return window.__catalogUpdatesResponse === 'zero' ? [] : [update];
           if (mode === 'installed' || mode === 'discover') return [update];
+          if (mode === 'errors') return window.__errorsWarningOnly ? [quirky] : [broken, quirky];
           return [];
         }
         if (command === 'recent_projects') return [{ id: 'p1', name: 'Demo Project', path: '/tmp/demo' }];
@@ -310,9 +313,17 @@ try {
 	);
 	await navigate("/", "OMP workspace");
 
+	// Scenario 1b — the update count and the errors badge (red, mixed Error+Warning) surface in the
+	// sidebar at launch, before any marketplace page is visited, and survive closing the details panel.
+	await evaluate(`document.querySelector('.topbar-panel-toggle').click()`);
+	await retry(async () => evaluate(`!document.querySelector('.workspace-rail')`));
+	await retry(async () => evaluate(`document.querySelector('a[href="/updates"] .nav-item__count')?.textContent === '1' && document.querySelector('a[href="/errors"] .nav-item__count')?.textContent === '2' && document.querySelector('a[href="/errors"] .nav-item__count')?.className.includes('nav-item__count--error') && location.pathname === '/'`));
+	await evaluate(`document.querySelector('.topbar-panel-toggle').click()`);
+	await retry(async () => evaluate(`!!document.querySelector('.workspace-rail')`));
+
 	// Scenario 2 — Discover reports held loading without duplicate requests, then marketplace routes reuse warmed catalogs in the same shell.
 	await evaluate(
-		`(() => { window.__documentMarker = {}; window.__shellBefore = document.querySelector('.app-shell'); window.__catalogCalls = { discover: 0, installed: 0, updates: 0, local: 0 }; window.__holdDiscover = true; window.__releaseDiscover = undefined; document.querySelector('.sidebar a[href="/discover"]')?.click(); return true; })()`,
+		`(() => { window.__documentMarker = {}; window.__shellBefore = document.querySelector('.app-shell'); window.__catalogCalls = { discover: 0, installed: 0, updates: 0, errors: 0 }; window.__holdDiscover = true; window.__releaseDiscover = undefined; document.querySelector('.sidebar a[href="/discover"]')?.click(); return true; })()`,
 	);
 	await retry(async () =>
 		evaluate(
@@ -407,7 +418,7 @@ try {
 	);
 	for (const tab of [
 		{ label: "Updates", path: "/updates", heading: "Package updates" },
-		{ label: "Local resources", path: "/local", heading: "Local resources" },
+		{ label: "Errors", path: "/errors", heading: "Plugin errors" },
 		{ label: "Discover", path: "/discover", heading: "Pi Catalog" },
 	]) {
 		await evaluate(
@@ -663,6 +674,48 @@ try {
 			!catalog.overflow,
 		"Catalog contract failed",
 	);
+
+	// Scenario 1c — installed rows stretch to the table width, and the topbar toggle hides the detail panel.
+	await navigate("/installed", "Installed resources");
+	await retry(async () => evaluate(`!!document.querySelector('.package-row')`));
+	const tableGeometry = await evaluate(`(() => { const head = document.querySelector('.package-table-head')?.getBoundingClientRect(); const row = document.querySelector('.package-row')?.getBoundingClientRect(); return head && row ? { headWidth: Math.round(head.width), rowWidth: Math.round(row.width), headLeft: Math.round(head.left), rowLeft: Math.round(row.left) } : null; })()`);
+	assert(
+		tableGeometry && Math.abs(tableGeometry.headWidth - tableGeometry.rowWidth) < 2 && Math.abs(tableGeometry.headLeft - tableGeometry.rowLeft) < 2,
+		"Installed rows do not stretch to the table width: " + JSON.stringify(tableGeometry),
+	);
+	await evaluate(`document.querySelector('.topbar-panel-toggle').click()`);
+	await retry(async () => evaluate(`!document.querySelector('.package-detail') && document.querySelector('.ecosystem-page').classList.contains('ecosystem-page--wide')`));
+	await evaluate(`document.querySelector('.topbar-panel-toggle').click()`);
+	await retry(async () => evaluate(`!!document.querySelector('.package-detail') && !document.querySelector('.ecosystem-page').classList.contains('ecosystem-page--wide')`));
+
+	// Scenario 1e — the marketplace lists plugin issues with status and message, and the sidebar badge shows the count.
+	await navigate("/errors", "Plugin errors");
+	await retry(async () => evaluate(`document.querySelectorAll('.error-row').length === 2`));
+	const errorsView = await evaluate(
+		`(() => { const tabs = [...document.querySelectorAll('.tabs button')]; const errorsTab = tabs.find(button => button.innerText.startsWith('Errors')); return { rows: [...document.querySelectorAll('.error-row')].map(row => row.innerText), badge: document.querySelector('a[href="/errors"] .nav-item__count')?.textContent, badgeTone: document.querySelector('a[href="/errors"] .nav-item__count')?.className ?? '', tab: errorsTab?.innerText ?? '', tabCount: errorsTab?.querySelector('.tab-count')?.textContent ?? '', detail: !!document.querySelector('.package-detail'), wide: document.querySelector('.ecosystem-page')?.classList.contains('ecosystem-page--wide'), statGrid: !!document.querySelector('.stat-grid'), tableHead: !!document.querySelector('.package-table-head') }; })()`,
+	);
+	assert(
+		errorsView.rows.length === 2 &&
+			errorsView.rows.some(row => row.includes('broken-plugin') && row.includes('Failed to load')) &&
+			errorsView.rows.some(row => row.includes('quirky-plugin') && row.includes('No omp/pi manifest')) &&
+			errorsView.badge === '2' &&
+			errorsView.badgeTone.includes('nav-item__count--error') &&
+			errorsView.tab.startsWith('Errors') && errorsView.tabCount === '2' &&
+			!errorsView.detail && errorsView.wide && !errorsView.statGrid && !errorsView.tableHead,
+		"Errors view contract failed: " + JSON.stringify(errorsView),
+	);
+
+	// Scenario 1f — warning-only errors keep the badge yellow.
+	await evaluate(`sessionStorage.setItem('errorsWarningOnly', '1')`);
+	await navigate("/errors", "Plugin errors");
+	await retry(async () => evaluate(`document.querySelector('a[href="/errors"] .nav-item__count')?.textContent === '1'`));
+	const warningBadge = await evaluate(`document.querySelector('a[href="/errors"] .nav-item__count')?.className ?? ''`);
+	assert(
+		warningBadge.includes('nav-item__count--warning') && !warningBadge.includes('nav-item__count--error'),
+		'Warnings-only badge must be yellow: ' + JSON.stringify(warningBadge),
+	);
+	await evaluate(`sessionStorage.removeItem('errorsWarningOnly')`);
+
 	const persistedPreferences = await evaluate(
 		`({ recent: JSON.parse(localStorage.getItem('omp-studio:recent-models') || '[]'), effort: localStorage.getItem('omp-studio:thinking-level') })`,
 	);
@@ -1283,11 +1336,12 @@ try {
 		evaluate(`document.querySelectorAll('.usage-account').length === 2`),
 	);
 	const usageOverview = await evaluate(
-		`(() => { const blocks = [...document.querySelectorAll('.usage-account')]; return { count: blocks.length, selectorless: !document.querySelector('[aria-label="Usage account"]'), providers: blocks.map(block => block.querySelector('h2')?.textContent), orgs: blocks.map(block => block.querySelector('.usage-account__id small')?.textContent), limits: blocks.map(block => [...block.querySelectorAll('.usage-limit')].map(card => card.innerText)) }; })()`,
+		`(() => { const blocks = [...document.querySelectorAll('.usage-account')]; return { count: blocks.length, selectorless: !document.querySelector('[aria-label="Usage account"]'), providers: blocks.map(block => block.querySelector('h2')?.textContent), orgs: blocks.map(block => block.querySelector('.usage-account__id small')?.textContent), limits: blocks.map(block => [...block.querySelectorAll('.usage-limit')].map(card => card.innerText)), order: (() => { const links = ['/models', '/usage', '/providers'].map(href => document.querySelector('.sidebar-secondary a[href="' + href + '"]')); return links.every(Boolean) && !!(links[0].compareDocumentPosition(links[1]) & Node.DOCUMENT_POSITION_FOLLOWING) && !!(links[1].compareDocumentPosition(links[2]) & Node.DOCUMENT_POSITION_FOLLOWING); })() }; })()`,
 	);
 	assert(
 		usageOverview.count === 2 &&
 			usageOverview.selectorless &&
+			usageOverview.order &&
 			usageOverview.providers.includes("OpenAI Codex") &&
 			usageOverview.providers.includes("Anthropic"),
 		"Usage did not stack every provider account: " +
@@ -1709,7 +1763,7 @@ try {
 	);
 	await send("Network.setBlockedURLs", { urls: [] });
 
-	console.log(JSON.stringify({ scenarios: 14, assertions, status: "ok" }));
+	console.log(JSON.stringify({ scenarios: 17, assertions, status: "ok" }));
 } finally {
 	socket?.close();
 	for (const process of [chromium, preview]) {
